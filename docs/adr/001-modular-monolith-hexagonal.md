@@ -30,3 +30,7 @@ Cross-module communication happens through explicit application ports/events rat
 ### Negative / Trade-offs
 * Requires team/contributor discipline (and lint/boundary rules) to prevent cross-module shortcut imports.
 * All modules scale together within the same runtime process unless specific background workers are separated later.
+
+## Implementation Notes
+
+The order HTTP adapter lives with the fulfillment bounded context. It delegates to the application service, which stores order state and an asynchronous saga job in PostgreSQL; the worker updates the order as fulfillment progresses. Mutating order routes use the shared idempotency store. This keeps transport and persistence concerns outside the domain state machine while allowing the current modules to share one deployment and database.

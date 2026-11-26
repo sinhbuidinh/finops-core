@@ -27,3 +27,7 @@ We will use an **Orchestration Saga** (`OrderFulfillmentSaga`) composed of discr
 ### Negative / Trade-offs
 * Orchestrator logic must be carefully tested for partial failure and retry edge cases.
 * Requires every step and compensation action to be idempotent.
+
+## Implementation Notes
+
+Fulfillment jobs are persisted before the API acknowledges order creation. The worker claims jobs with `FOR UPDATE SKIP LOCKED`, runs inventory reservation followed by ledger posting, and records completion/failure. `FulfillmentSaga` compensates only successfully completed steps, in reverse order; a payment posting failure therefore releases the reservation. The HTTP resource exposes the persisted lifecycle through `GET /orders/:id`, and cancellation is accepted only while the saga job is still pending. Step retries and compensations must remain idempotent because a worker may recover a job after its lease expires.

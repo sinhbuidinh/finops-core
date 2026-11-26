@@ -9,9 +9,12 @@ import { FulfillmentSagaService } from './fulfillment-saga.service.js';
 import { LedgerPostingAdapter } from './infrastructure/ledger-posting.adapter.js';
 import { FulfillmentSagaWorker } from './infrastructure/fulfillment-saga.worker.js';
 import { InventoryService } from '../inventory/inventory.service.js';
+import { IdempotencyModule } from '../../shared/infrastructure/idempotency/idempotency.module.js';
+import { OrdersController } from './orders.controller.js';
 
 @Module({
-  imports: [DatabaseModule, InventoryModule, LedgerModule],
+  imports: [DatabaseModule, InventoryModule, LedgerModule, IdempotencyModule],
+  controllers: [OrdersController],
   providers: [
     LedgerPostingAdapter,
     { provide: LEDGER_POSTING_PORT, useExisting: LedgerPostingAdapter },

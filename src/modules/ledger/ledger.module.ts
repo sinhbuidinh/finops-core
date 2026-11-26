@@ -28,6 +28,6 @@ import { PostgresLedgerEntryRepository } from './infrastructure/postgres-ledger-
     },
     LedgerService,
   ],
-  exports: [PostgresLedgerEntryRepository, PostJournalEntryUseCase, ReverseJournalEntryUseCase],
+  exports: [PostgresLedgerEntryRepository, PostJournalEntryUseCase, ReverseJournalEntryUseCase, LedgerService],
 })
 export class LedgerModule {}

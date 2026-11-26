@@ -4,6 +4,9 @@ import type { Pool } from 'pg';
 import { POSTGRES_POOL } from '../../../shared/infrastructure/database/database.module.js';
 import type { FulfillmentContext } from '../application/saga-steps.js';
 import { FulfillmentSaga } from '../application/fulfillment-saga.js';
+import { OrderState } from '../domain/order-state-machine.js';
+
+const SagaJobState = { PENDING: 'PENDING', RUNNING: 'RUNNING', COMPLETED: 'COMPLETED', FAILED: 'FAILED' } as const;
 
 @Injectable()
 export class FulfillmentSagaWorker implements OnModuleInit, OnModuleDestroy {
@@ -33,9 +36,17 @@ export class FulfillmentSagaWorker implements OnModuleInit, OnModuleDestroy {
       row = claimed.rows[0];
       if (!row) { await client.query('COMMIT'); return; }
       await client.query(`UPDATE fulfillment_saga_jobs SET state = 'RUNNING', attempts = attempts + 1, locked_at = now() WHERE saga_id = $1`, [row.saga_id]);
+      await client.query(`UPDATE fulfillment_orders SET state = $2, updated_at = now() WHERE id = $1 AND state = $3`, [row.order_id, OrderState.RESERVING_STOCK, OrderState.APPROVED]);
       await client.query('COMMIT');
-      await this.saga.execute({ ...row.payload, sagaId: row.saga_id });
-      await this.finish(row.saga_id, row.order_id, 'COMPLETED', { sagaId: row.saga_id, orderId: row.order_id });
+      await this.saga.execute({
+        ...row.payload,
+        sagaId: row.saga_id,
+        onPaymentStarting: async () => {
+          await this.pool.query(`UPDATE fulfillment_orders SET state = $2, updated_at = now() WHERE id = $1 AND state = $3`, [row!.order_id, OrderState.SETTLING_PAYMENT, OrderState.RESERVING_STOCK]);
+        },
+      });
+      await this.pool.query(`UPDATE fulfillment_orders SET state = $2, updated_at = now() WHERE id = $1 AND state <> $3`, [row.order_id, OrderState.CONFIRMED, OrderState.CANCELLED]);
+      await this.finish(row.saga_id, row.order_id, SagaJobState.COMPLETED, { sagaId: row.saga_id, orderId: row.order_id });
     } catch (error) {
       await client.query('ROLLBACK').catch(() => undefined);
       if (row) {
@@ -44,14 +55,15 @@ export class FulfillmentSagaWorker implements OnModuleInit, OnModuleDestroy {
         const delay = Math.min(300_000, 1000 * 2 ** row.attempts);
         await this.pool.query(
           `UPDATE fulfillment_saga_jobs SET state = $2, locked_at = NULL, available_at = now() + ($3 * interval '1 millisecond'), last_error = $4
-            WHERE saga_id = $1`, [row.saga_id, terminal ? 'FAILED' : 'PENDING', delay, error instanceof Error ? error.message.slice(0, 4000) : String(error).slice(0, 4000)],
+            WHERE saga_id = $1`, [row.saga_id, terminal ? SagaJobState.FAILED : SagaJobState.PENDING, delay, error instanceof Error ? error.message.slice(0, 4000) : String(error).slice(0, 4000)],
         );
-        if (terminal) await this.finish(row.saga_id, row.order_id, 'FAILED', { sagaId: row.saga_id, orderId: row.order_id, error: error instanceof Error ? error.message : String(error) });
+        if (terminal) await this.finish(row.saga_id, row.order_id, SagaJobState.FAILED, { sagaId: row.saga_id, orderId: row.order_id, error: error instanceof Error ? error.message : String(error) });
+        if (terminal) await this.pool.query(`UPDATE fulfillment_orders SET state = $2, updated_at = now() WHERE id = $1 AND state <> $3`, [row.order_id, OrderState.FAILED, OrderState.CANCELLED]);
       }
     } finally { client.release(); this.busy = false; }
   }
 
-  private async finish(sagaId: string, orderId: string, state: 'COMPLETED' | 'FAILED', payload: Record<string, unknown>): Promise<void> {
+  private async finish(sagaId: string, orderId: string, state: typeof SagaJobState.COMPLETED | typeof SagaJobState.FAILED, payload: Record<string, unknown>): Promise<void> {
     const client = await this.pool.connect();
     try {
       await client.query('BEGIN');

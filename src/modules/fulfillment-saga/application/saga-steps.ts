@@ -14,6 +14,7 @@ export interface FulfillmentContext {
     readonly description: string;
     readonly lines: readonly { readonly accountId: string; readonly side: 'DEBIT' | 'CREDIT'; readonly amount: { readonly minorUnits: string; readonly currency: string }; readonly memo?: string }[];
   };
+  onPaymentStarting?: () => Promise<void>;
   reservationId?: string;
   ledgerEntryId?: string;
 }
@@ -35,6 +36,7 @@ export class SettleLedgerPaymentStep implements SagaStep<FulfillmentContext, str
   readonly name = 'settle-ledger-payment';
   constructor(private readonly ledger: LedgerPostingPort) {}
   async execute(context: FulfillmentContext): Promise<string> {
+    await context.onPaymentStarting?.();
     const entry = JournalEntry.create({
       id: context.payment.id,
       description: context.payment.description,

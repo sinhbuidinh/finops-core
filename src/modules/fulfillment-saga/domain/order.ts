@@ -1,12 +1,12 @@
 import { AggregateRoot } from '../../../shared/domain/aggregate-root.js';
 import { DomainValidationError } from '../../../shared/domain/domain-error.js';
 import type { DomainEvent } from '../../../shared/domain/domain-event.js';
-import { OrderStateMachine, type OrderState } from './order-state-machine.js';
+import { OrderState, OrderStateMachine, type OrderState as OrderStateValue } from './order-state-machine.js';
 
 interface OrderStateChangedPayload {
   orderId: string;
-  previousState: OrderState;
-  state: OrderState;
+  previousState: OrderStateValue;
+  state: OrderStateValue;
 }
 
 function orderStateChangedEvent(payload: OrderStateChangedPayload): DomainEvent<OrderStateChangedPayload> {
@@ -21,7 +21,7 @@ function orderStateChangedEvent(payload: OrderStateChangedPayload): DomainEvent<
 export interface OrderInput {
   id: string;
   tenantId: string;
-  state?: OrderState;
+  state?: OrderStateValue;
 }
 
 /** Order lifecycle aggregate. All state changes pass through its state machine. */
@@ -29,7 +29,7 @@ export class Order extends AggregateRoot<string> {
   private constructor(
     id: string,
     readonly tenantId: string,
-    private currentState: OrderState,
+    private currentState: OrderStateValue,
   ) {
     super(id);
   }
@@ -38,14 +38,14 @@ export class Order extends AggregateRoot<string> {
     if (!input.id.trim() || !input.tenantId.trim()) {
       throw new DomainValidationError('Order id and tenant id are required', 'INVALID_ORDER');
     }
-    return new Order(input.id, input.tenantId, input.state ?? 'DRAFT');
+    return new Order(input.id, input.tenantId, input.state ?? OrderState.DRAFT);
   }
 
-  get state(): OrderState {
+  get state(): OrderStateValue {
     return this.currentState;
   }
 
-  transitionTo(next: OrderState): void {
+  transitionTo(next: OrderStateValue): void {
     const previousState = this.currentState;
     this.currentState = OrderStateMachine.transition(this.currentState, next);
     this.addDomainEvent(orderStateChangedEvent({

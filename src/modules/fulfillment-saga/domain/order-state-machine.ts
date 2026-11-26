@@ -1,27 +1,28 @@
 import { DomainConflictError } from '../../../shared/domain/domain-error.js';
 
-export const ORDER_STATES = [
-  'DRAFT',
-  'PENDING_APPROVAL',
-  'APPROVED',
-  'RESERVING_STOCK',
-  'SETTLING_PAYMENT',
-  'CONFIRMED',
-  'CANCELLED',
-  'FAILED',
-] as const;
+export const OrderState = {
+  DRAFT: 'DRAFT',
+  PENDING_APPROVAL: 'PENDING_APPROVAL',
+  APPROVED: 'APPROVED',
+  RESERVING_STOCK: 'RESERVING_STOCK',
+  SETTLING_PAYMENT: 'SETTLING_PAYMENT',
+  CONFIRMED: 'CONFIRMED',
+  CANCELLED: 'CANCELLED',
+  FAILED: 'FAILED',
+} as const;
+export const ORDER_STATES = Object.values(OrderState);
 
-export type OrderState = (typeof ORDER_STATES)[number];
+export type OrderState = (typeof OrderState)[keyof typeof OrderState];
 
 const TRANSITIONS: Readonly<Record<OrderState, readonly OrderState[]>> = {
-  DRAFT: ['PENDING_APPROVAL', 'APPROVED', 'CANCELLED'],
-  PENDING_APPROVAL: ['APPROVED', 'CANCELLED'],
-  APPROVED: ['RESERVING_STOCK', 'CANCELLED', 'FAILED'],
-  RESERVING_STOCK: ['SETTLING_PAYMENT', 'CANCELLED', 'FAILED'],
-  SETTLING_PAYMENT: ['CONFIRMED', 'FAILED'],
-  CONFIRMED: [],
-  CANCELLED: [],
-  FAILED: [],
+  [OrderState.DRAFT]: [OrderState.PENDING_APPROVAL, OrderState.APPROVED, OrderState.CANCELLED],
+  [OrderState.PENDING_APPROVAL]: [OrderState.APPROVED, OrderState.CANCELLED],
+  [OrderState.APPROVED]: [OrderState.RESERVING_STOCK, OrderState.CANCELLED, OrderState.FAILED],
+  [OrderState.RESERVING_STOCK]: [OrderState.SETTLING_PAYMENT, OrderState.CANCELLED, OrderState.FAILED],
+  [OrderState.SETTLING_PAYMENT]: [OrderState.CONFIRMED, OrderState.FAILED],
+  [OrderState.CONFIRMED]: [],
+  [OrderState.CANCELLED]: [],
+  [OrderState.FAILED]: [],
 };
 
 /** Defines the legal lifecycle transitions for an order. */
