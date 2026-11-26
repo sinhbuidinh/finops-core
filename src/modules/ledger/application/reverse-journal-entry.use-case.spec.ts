@@ -18,7 +18,8 @@ function repository(overrides: Partial<LedgerEntryRepositoryPort> = {}): LedgerE
     save: vi.fn(),
     findById: vi.fn().mockResolvedValue(original),
     findReversalOf: vi.fn().mockResolvedValue(null),
-    saveReversal: vi.fn().mockResolvedValue(undefined),
+    findIdempotentResult: vi.fn().mockResolvedValue(null),
+    saveReversal: vi.fn(async (_originalId, reversal) => reversal),
     ...overrides,
   };
 }
@@ -31,7 +32,7 @@ describe('ReverseJournalEntryUseCase', () => {
     const reversal = await useCase.execute({ originalEntryId: original.id, reversalEntryId: 'entry-2' });
 
     expect(reversal.reversalOfEntryId).toBe(original.id);
-    expect(entries.saveReversal).toHaveBeenCalledWith(original.id, reversal);
+    expect(entries.saveReversal).toHaveBeenCalledWith(original.id, reversal, undefined);
     expect(entries.save).not.toHaveBeenCalled();
     expect(original.lines.map(({ side, amount }) => [side, amount.toJSON()])).toEqual(before);
   });

@@ -91,4 +91,19 @@ export class JournalEntry {
       })),
     });
   }
+
+  toJSON(): Record<string, unknown> {
+    return {
+      id: this.id,
+      description: this.description,
+      postedAt: this.postedAt.toISOString(),
+      reversalOfEntryId: this.reversalOfEntryId ?? null,
+      lines: this.lines.map((line) => ({
+        accountId: line.accountId,
+        side: line.side,
+        amount: line.amount.toJSON(),
+        ...(line.memo !== undefined && { memo: line.memo }),
+      })),
+    };
+  }
 }
