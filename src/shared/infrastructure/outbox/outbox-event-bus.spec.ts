@@ -32,4 +32,20 @@ describe('OutboxEventBus', () => {
       'No outbox handler registered for order.placed',
     );
   });
+
+  it('unsubscribes one handler while preserving others, then removes an empty event bucket', async () => {
+    const bus = new OutboxEventBus();
+    const first = vi.fn();
+    const second = vi.fn();
+    const unsubscribeFirst = bus.subscribe('order.placed', first);
+    bus.subscribe('order.placed', second);
+    unsubscribeFirst();
+    await bus.publish(message);
+    expect(first).not.toHaveBeenCalled();
+    expect(second).toHaveBeenCalledWith(message);
+
+    const unsubscribeSecond = bus.subscribe('order.cancelled', second);
+    unsubscribeSecond();
+    await expect(bus.publish({ ...message, eventName: 'order.cancelled' })).rejects.toThrow('No outbox handler');
+  });
 });

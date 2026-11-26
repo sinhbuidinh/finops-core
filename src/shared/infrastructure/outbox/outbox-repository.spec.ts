@@ -114,4 +114,23 @@ describe('OutboxRepository', () => {
       'handler failed',
     ]);
   });
+
+  it('marks a claimed event as published', async () => {
+    query.mockResolvedValueOnce({ rowCount: 1, rows: [] });
+    await repository.markPublished('event-1', 'claim-1');
+    expect(query.mock.calls[0][0]).toContain("SET state = 'PUBLISHED'");
+    expect(query.mock.calls[0][1]).toEqual(['event-1', 'claim-1']);
+  });
+
+  it('caps retry delay and converts non-Error failures to text', async () => {
+    query.mockResolvedValueOnce({ rowCount: 1, rows: [] });
+    const event = {
+      eventId: 'event-1', aggregateId: 'order-1', eventName: 'order.placed',
+      payload: {}, occurredAt: new Date(), attempts: 5, claimToken: 'claim-1',
+    };
+    await repository.markFailed(event, event.claimToken, { failure: true }, {
+      maxAttempts: 8, baseDelayMs: 1000, maxDelayMs: 3000,
+    });
+    expect(query.mock.calls[0][1]).toEqual(['event-1', 'claim-1', 8, 3000, '[object Object]']);
+  });
 });

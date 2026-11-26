@@ -36,6 +36,10 @@ describe('JournalEntry', () => {
     ] }))).toThrow(DomainValidationError);
     expect(() => JournalEntry.create(input({ lines: [balancedLines()[0]!] }))).toThrow(DomainValidationError);
     expect(() => JournalEntry.create(input({ lines: [
+      { accountId: ' ', side: JOURNAL_SIDES.DEBIT, amount: money(125n) },
+      { accountId: 'revenue', side: JOURNAL_SIDES.CREDIT, amount: money(125n) },
+    ] }))).toThrow(DomainValidationError);
+    expect(() => JournalEntry.create(input({ lines: [
       { accountId: 'cash', side: JOURNAL_SIDES.DEBIT, amount: money(0n) },
       { accountId: 'revenue', side: JOURNAL_SIDES.CREDIT, amount: money(0n) },
     ] }))).toThrow(DomainValidationError);
@@ -61,6 +65,23 @@ describe('JournalEntry', () => {
       { accountId: 'cash', side: JOURNAL_SIDES.CREDIT, amount: { minorUnits: '125', currency: 'USD' } },
       { accountId: 'revenue', side: JOURNAL_SIDES.DEBIT, amount: { minorUnits: '125', currency: 'USD' } },
     ]);
+  });
+
+  it('serializes immutable entries with string minor units and optional memos', () => {
+    const entry = JournalEntry.create(input({ lines: [
+      { accountId: 'cash', side: JOURNAL_SIDES.DEBIT, amount: money(125n), memo: 'deposit' },
+      { accountId: 'revenue', side: JOURNAL_SIDES.CREDIT, amount: money(125n) },
+    ] }));
+    expect(entry.toJSON()).toEqual({
+      id: 'entry-1',
+      description: 'Sale',
+      postedAt: '2026-01-01T00:00:00.000Z',
+      reversalOfEntryId: null,
+      lines: [
+        { accountId: 'cash', side: JOURNAL_SIDES.DEBIT, amount: { minorUnits: '125', currency: 'USD' }, memo: 'deposit' },
+        { accountId: 'revenue', side: JOURNAL_SIDES.CREDIT, amount: { minorUnits: '125', currency: 'USD' } },
+      ],
+    });
   });
 
   it('rejects an entry reversing itself', () => {

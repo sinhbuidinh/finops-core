@@ -48,4 +48,29 @@ describe('ReverseJournalEntryUseCase', () => {
     await expect(new ReverseJournalEntryUseCase(repository({ findReversalOf: vi.fn().mockResolvedValue(reversalEntry) }))
       .execute({ originalEntryId: original.id, reversalEntryId: 'entry-4' })).rejects.toThrow(DomainConflictError);
   });
+
+  it('returns an idempotent replay before checking the original entry', async () => {
+    const replay = JournalEntry.reversalOf('entry-replay', original);
+    const entries = repository({ findIdempotentResult: vi.fn().mockResolvedValue(replay) });
+    const result = await new ReverseJournalEntryUseCase(entries).execute({
+      originalEntryId: original.id,
+      reversalEntryId: replay.id,
+      idempotency: { scope: 'ledger:reverse', key: 'key', fingerprint: 'fingerprint' },
+    });
+    expect(result).toBe(replay);
+    expect(entries.findById).not.toHaveBeenCalled();
+  });
+
+  it('creates a reversal when no completed idempotency result exists', async () => {
+    const entries = repository();
+    const result = await new ReverseJournalEntryUseCase(entries).execute({
+      originalEntryId: original.id,
+      reversalEntryId: 'entry-with-idempotency',
+      idempotency: { scope: 'ledger:reverse', key: 'key', fingerprint: 'fingerprint' },
+    });
+    expect(entries.findIdempotentResult).toHaveBeenCalledOnce();
+    expect(entries.saveReversal).toHaveBeenCalledWith(original.id, result, {
+      scope: 'ledger:reverse', key: 'key', fingerprint: 'fingerprint',
+    });
+  });
 });

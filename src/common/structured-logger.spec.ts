@@ -24,4 +24,33 @@ describe('StructuredLogger', () => {
 
     output.mockRestore();
   });
+
+  it('routes every log level and serializes error stacks and optional fields', () => {
+    const out = vi.spyOn(console, 'log').mockImplementation(() => undefined);
+    const warn = vi.spyOn(console, 'warn').mockImplementation(() => undefined);
+    const errorOutput = vi.spyOn(console, 'error').mockImplementation(() => undefined);
+    const logger = new StructuredLogger();
+    const failure = new Error('failure');
+
+    logger.log('info');
+    logger.warn('warning');
+    logger.debug('debug');
+    logger.verbose('verbose');
+    logger.error(failure, 'LoggerContext', { requestId: 'r1' });
+    logger.fatal('fatal');
+
+    expect(out).toHaveBeenCalledTimes(3);
+    expect(warn).toHaveBeenCalledOnce();
+    expect(errorOutput).toHaveBeenCalledTimes(2);
+    const serializedError = JSON.parse(errorOutput.mock.calls[0]![0] as string) as Record<string, unknown>;
+    expect(serializedError).toMatchObject({
+      level: 'error', message: 'failure', context: 'LoggerContext', stack: failure.stack,
+      details: [{ requestId: 'r1' }],
+    });
+    expect(JSON.parse(out.mock.calls[2]![0] as string)).toMatchObject({ level: 'trace', message: 'verbose' });
+
+    out.mockRestore();
+    warn.mockRestore();
+    errorOutput.mockRestore();
+  });
 });

@@ -64,4 +64,65 @@ describe('OutboxRelayWorker', () => {
     expect(repository.markPublished).not.toHaveBeenCalled();
     warn.mockRestore();
   });
+
+  it('logs poll failures and keeps the worker usable', async () => {
+    const failure = new Error('database unavailable');
+    repository.claimBatch.mockRejectedValueOnce(failure);
+    const error = vi.spyOn(console, 'error').mockImplementation(() => undefined);
+    const worker = new OutboxRelayWorker(repository as unknown as OutboxRepository, eventBus as unknown as OutboxEventBus);
+
+    await worker.runOnce();
+    expect(error).toHaveBeenCalledOnce();
+    expect(repository.claimBatch).toHaveBeenCalledOnce();
+    error.mockRestore();
+  });
+
+  it('does not overlap polling and can run again after the active poll completes', async () => {
+    let finish!: (batch: OutboxMessage[]) => void;
+    repository.claimBatch.mockImplementationOnce(() => new Promise<OutboxMessage[]>((resolve) => { finish = resolve; }));
+    const worker = new OutboxRelayWorker(repository as unknown as OutboxRepository, eventBus as unknown as OutboxEventBus);
+
+    const active = worker.runOnce();
+    await worker.runOnce();
+    expect(repository.claimBatch).toHaveBeenCalledOnce();
+    finish([]);
+    await active;
+    await worker.runOnce();
+    expect(repository.claimBatch).toHaveBeenCalledTimes(2);
+  });
+
+  it('logs when failure recording fails, including an error thrown by publication marking', async () => {
+    eventBus.publish.mockRejectedValueOnce(new Error('subscriber failed'));
+    repository.markFailed.mockRejectedValueOnce(new Error('database unavailable'));
+    const error = vi.spyOn(console, 'error').mockImplementation(() => undefined);
+    const warn = vi.spyOn(console, 'warn').mockImplementation(() => undefined);
+    const worker = new OutboxRelayWorker(repository as unknown as OutboxRepository, eventBus as unknown as OutboxEventBus);
+
+    await worker.runOnce();
+    expect(error).toHaveBeenCalledOnce();
+    expect(warn).toHaveBeenCalledOnce();
+    error.mockRestore();
+    warn.mockRestore();
+  });
+
+  it('starts an immediate poll and clears its timer on shutdown', () => {
+    const interval = { unref: vi.fn() } as unknown as NodeJS.Timeout;
+    const setIntervalSpy = vi.spyOn(globalThis, 'setInterval').mockReturnValue(interval);
+    const clearIntervalSpy = vi.spyOn(globalThis, 'clearInterval').mockImplementation(() => undefined);
+    const worker = new OutboxRelayWorker(repository as unknown as OutboxRepository, eventBus as unknown as OutboxEventBus);
+    const run = vi.spyOn(worker, 'runOnce').mockResolvedValue();
+
+    worker.onModuleInit();
+    expect(setIntervalSpy).toHaveBeenCalledOnce();
+    expect(interval.unref).toHaveBeenCalledOnce();
+    expect(run).toHaveBeenCalledOnce();
+    setIntervalSpy.mock.calls[0]![0]();
+    expect(run).toHaveBeenCalledTimes(2);
+    worker.onModuleDestroy();
+    expect(clearIntervalSpy).toHaveBeenCalledWith(interval);
+    new OutboxRelayWorker(repository as unknown as OutboxRepository, eventBus as unknown as OutboxEventBus).onModuleDestroy();
+
+    setIntervalSpy.mockRestore();
+    clearIntervalSpy.mockRestore();
+  });
 });
