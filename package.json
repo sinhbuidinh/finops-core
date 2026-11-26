@@ -23,6 +23,7 @@
     "test:ledger": "vitest run src/modules/ledger",
     "test:ledger:cov": "vitest run --coverage --coverage.all --coverage.include=src/modules/ledger/**/*.ts --coverage.exclude=src/modules/ledger/**/*.spec.ts src/modules/ledger",
     "test:inventory": "vitest run src/modules/inventory test/integration/inventory-concurrency.spec.ts",
+    "test:fulfillment-saga": "vitest run src/modules/fulfillment-saga",
     "test:inventory:cov": "vitest run --coverage --coverage.all --coverage.include=src/modules/inventory/**/*.ts --coverage.exclude=src/modules/inventory/**/*.spec.ts src/modules/inventory test/integration/inventory-concurrency.spec.ts",
     "test:watch": "vitest",
     "test:cov": "vitest run --coverage",
