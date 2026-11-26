@@ -28,7 +28,7 @@ describe('InventoryService', () => {
     await expect(service.reserve('sku', 1)).resolves.toMatchObject({ id: 'r' });
     await expect(service.release('r')).resolves.toMatchObject({ id: 'r' });
     expect(repository.findItem).toHaveBeenCalledWith('sku');
-    expect(repository.reserve).toHaveBeenCalledWith('sku', 1);
+    expect(repository.reserve).toHaveBeenCalledWith('sku', 1, undefined);
     expect(repository.release).toHaveBeenCalledWith('r');
   });
 });

@@ -10,6 +10,6 @@ export class InventoryService {
   }
   createItem(input: { id: string; totalQty: number }) { return this.useCase.createItem(input); }
   getItem(id: string) { return this.useCase.getItem(id); }
-  reserve(id: string, quantity: number) { return this.useCase.reserve(id, quantity); }
+  reserve(id: string, quantity: number, idempotencyKey?: string) { return this.useCase.reserve(id, quantity, idempotencyKey); }
   release(id: string) { return this.useCase.release(id); }
 }

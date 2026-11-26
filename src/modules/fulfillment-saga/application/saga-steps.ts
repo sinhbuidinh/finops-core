@@ -12,6 +12,7 @@ export interface FulfillmentContext {
   readonly payment: {
     readonly id: string;
     readonly description: string;
+    readonly postedAt?: string;
     readonly lines: readonly { readonly accountId: string; readonly side: 'DEBIT' | 'CREDIT'; readonly amount: { readonly minorUnits: string; readonly currency: string }; readonly memo?: string }[];
   };
   onPaymentStarting?: () => Promise<void>;
@@ -23,7 +24,7 @@ export class ReserveInventoryStep implements SagaStep<FulfillmentContext, string
   readonly name = 'reserve-inventory';
   constructor(private readonly inventory: InventoryService) {}
   async execute(context: FulfillmentContext): Promise<string> {
-    const reservation = await this.inventory.reserve(context.inventoryItemId, context.quantity);
+    const reservation = await this.inventory.reserve(context.inventoryItemId, context.quantity, `fulfillment:${context.sagaId}`);
     context.reservationId = reservation.id;
     return reservation.id;
   }
@@ -40,6 +41,7 @@ export class SettleLedgerPaymentStep implements SagaStep<FulfillmentContext, str
     const entry = JournalEntry.create({
       id: context.payment.id,
       description: context.payment.description,
+      postedAt: context.payment.postedAt ? new Date(context.payment.postedAt) : undefined,
       lines: context.payment.lines.map((line) => ({ ...line, amount: Money.fromMinorUnits(BigInt(line.amount.minorUnits), line.amount.currency) })),
     });
     const posted = await this.ledger.post(entry, { scope: 'fulfillment:saga:post', key: context.sagaId, fingerprint: context.payment.id });

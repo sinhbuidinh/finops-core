@@ -12,12 +12,17 @@ export class FulfillmentSagaService {
 
   async createOrder(input: { tenantId: string; inventoryItemId: string; quantity: number; payment: FulfillmentContext['payment'] }, key: string) {
     if (!key?.trim()) throw new BadRequestException('Idempotency-Key header is required');
-    if (!input.tenantId?.trim() || !input.inventoryItemId?.trim() || !Number.isInteger(input.quantity) || input.quantity <= 0 || !input.payment?.id || !Array.isArray(input.payment.lines)) {
+    if (!input.tenantId?.trim() || !input.inventoryItemId?.trim() || !Number.isInteger(input.quantity) || input.quantity <= 0 || !input.payment?.id || !Array.isArray(input.payment.lines)
+      || (input.payment.postedAt !== undefined && Number.isNaN(new Date(input.payment.postedAt).getTime()))) {
       throw new BadRequestException('Invalid order payload');
     }
     const id = randomUUID();
     const sagaId = randomUUID();
     const response = { id, tenantId: input.tenantId, state: OrderState.APPROVED, sagaId };
+    const persistedInput = {
+      ...input,
+      payment: { ...input.payment, postedAt: input.payment.postedAt ?? new Date().toISOString() },
+    };
     const idem = this.key('orders:create', key, JSON.stringify(input));
     const claim = await this.idempotency.acquire(idem);
     if (claim.kind === 'completed') return claim.responseBody;
@@ -27,8 +32,8 @@ export class FulfillmentSagaService {
       const client = await this.pool.connect();
       try {
         await client.query('BEGIN');
-        await client.query(`INSERT INTO fulfillment_orders (id, tenant_id, state, saga_id, payload) VALUES ($1, $2, $5, $3, $4)`, [id, input.tenantId, sagaId, input, OrderState.APPROVED]);
-        await client.query(`INSERT INTO fulfillment_saga_jobs (saga_id, order_id, payload) VALUES ($1, $2, $3)`, [sagaId, id, { ...input, orderId: id, sagaId }]);
+        await client.query(`INSERT INTO fulfillment_orders (id, tenant_id, state, saga_id, payload) VALUES ($1, $2, $5, $3, $4)`, [id, input.tenantId, sagaId, persistedInput, OrderState.APPROVED]);
+        await client.query(`INSERT INTO fulfillment_saga_jobs (saga_id, order_id, payload) VALUES ($1, $2, $3)`, [sagaId, id, { ...persistedInput, orderId: id, sagaId }]);
         await client.query('COMMIT');
       } catch (error) { await client.query('ROLLBACK').catch(() => undefined); throw error; }
       finally { client.release(); }

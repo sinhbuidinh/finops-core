@@ -4,7 +4,7 @@ import type { StockReservation } from '../domain/stock-reservation.js';
 export interface InventoryRepositoryPort {
   createItem(item: InventoryItem): Promise<InventoryItem>;
   findItem(itemId: string): Promise<InventoryItem | null>;
-  reserve(itemId: string, quantity: number): Promise<StockReservation>;
+  reserve(itemId: string, quantity: number, idempotencyKey?: string): Promise<StockReservation>;
   release(reservationId: string): Promise<StockReservation>;
 }
 

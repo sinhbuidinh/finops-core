@@ -16,8 +16,8 @@ export class InventoryUseCase {
     return item;
   }
 
-  reserve(itemId: string, quantity: number): Promise<StockReservation> {
-    return this.repository.reserve(itemId, quantity);
+  reserve(itemId: string, quantity: number, idempotencyKey?: string): Promise<StockReservation> {
+    return this.repository.reserve(itemId, quantity, idempotencyKey);
   }
 
   release(reservationId: string): Promise<StockReservation> {

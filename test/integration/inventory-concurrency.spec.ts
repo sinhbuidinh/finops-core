@@ -36,6 +36,9 @@ integration('inventory PostgreSQL concurrency', () => {
         created_at TIMESTAMPTZ NOT NULL DEFAULT now(), released_at TIMESTAMPTZ,
         CHECK ((status = 'ACTIVE' AND released_at IS NULL) OR (status = 'RELEASED' AND released_at IS NOT NULL))
       );`);
+    await pool.query('ALTER TABLE stock_reservations ADD COLUMN IF NOT EXISTS idempotency_key TEXT');
+    await pool.query(`CREATE UNIQUE INDEX IF NOT EXISTS stock_reservations_idempotency_key_idx
+      ON stock_reservations (idempotency_key) WHERE idempotency_key IS NOT NULL`);
     await repository.createItem(InventoryItem.create({ id: itemId, totalQty: 7 }));
   });
 

@@ -27,6 +27,6 @@ describe('LedgerModule', () => {
       .toBeInstanceOf(ReverseJournalEntryUseCase);
     expect(controllers).toContain(LedgerController);
     expect(imports).toContain(DatabaseModule);
-    expect(exports).toEqual([PostgresLedgerEntryRepository, PostJournalEntryUseCase, ReverseJournalEntryUseCase]);
+    expect(exports).toEqual([PostgresLedgerEntryRepository, PostJournalEntryUseCase, ReverseJournalEntryUseCase, LedgerService]);
   });
 });

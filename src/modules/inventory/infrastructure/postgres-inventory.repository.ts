@@ -34,13 +34,40 @@ export class PostgresInventoryRepository implements InventoryRepositoryPort {
     return result.rows[0] ? this.toItem(result.rows[0]) : null;
   }
 
-  async reserve(itemId: string, quantity: number): Promise<StockReservation> {
+  async reserve(itemId: string, quantity: number, idempotencyKey?: string): Promise<StockReservation> {
     // Validate before touching the database; availability is enforced by the conditional UPDATE.
     StockReservation.create({ id: 'validation', itemId, quantity });
     const client = await this.pool.connect();
     const reservationId = randomUUID();
     try {
       await client.query('BEGIN');
+      if (idempotencyKey) {
+        await client.query('SELECT pg_advisory_xact_lock(hashtextextended($1, 0))', [idempotencyKey]);
+        const prior = await client.query<ReservationRow>(
+          `SELECT reservation_id, item_id, quantity, status FROM stock_reservations
+            WHERE idempotency_key = $1 FOR UPDATE`, [idempotencyKey],
+        );
+        const existing = prior.rows[0];
+        if (existing) {
+          if (existing.item_id !== itemId || existing.quantity !== quantity) {
+            throw new DomainConflictError('Reservation idempotency key was used with different inventory details', 'RESERVATION_IDEMPOTENCY_KEY_REUSED');
+          }
+          if (existing.status === 'ACTIVE') {
+            await client.query('COMMIT');
+            return StockReservation.create({ id: existing.reservation_id, itemId, quantity });
+          }
+          const reactivated = await client.query(
+            `UPDATE inventory_items SET reserved_qty = reserved_qty + $2, version = version + 1, updated_at = now()
+              WHERE item_id = $1 AND total_qty - reserved_qty >= $2 RETURNING item_id`, [itemId, quantity],
+          );
+          if (!reactivated.rowCount) throw new DomainConflictError('Insufficient available inventory', 'INSUFFICIENT_INVENTORY');
+          await client.query(
+            `UPDATE stock_reservations SET status = 'ACTIVE', released_at = NULL WHERE reservation_id = $1`, [existing.reservation_id],
+          );
+          await client.query('COMMIT');
+          return StockReservation.create({ id: existing.reservation_id, itemId, quantity });
+        }
+      }
       const updated = await client.query(
         `UPDATE inventory_items
             SET reserved_qty = reserved_qty + $2, version = version + 1, updated_at = now()
@@ -53,8 +80,8 @@ export class PostgresInventoryRepository implements InventoryRepositoryPort {
         throw new DomainConflictError('Insufficient available inventory', 'INSUFFICIENT_INVENTORY');
       }
       await client.query(
-        `INSERT INTO stock_reservations (reservation_id, item_id, quantity)
-         VALUES ($1, $2, $3)`, [reservationId, itemId, quantity],
+        `INSERT INTO stock_reservations (reservation_id, item_id, quantity, idempotency_key)
+         VALUES ($1, $2, $3, $4)`, [reservationId, itemId, quantity, idempotencyKey ?? null],
       );
       await client.query('COMMIT');
       return StockReservation.create({ id: reservationId, itemId, quantity });
@@ -75,9 +102,13 @@ export class PostgresInventoryRepository implements InventoryRepositoryPort {
       );
       const reservation = result.rows[0];
       if (!reservation) {
-        const exists = await client.query('SELECT 1 FROM stock_reservations WHERE reservation_id = $1', [reservationId]);
-        if (!exists.rowCount) throw new DomainNotFoundError(`Stock reservation not found: ${reservationId}`);
-        throw new DomainConflictError('Stock reservation has already been released', 'RESERVATION_ALREADY_RELEASED');
+        const exists = await client.query<ReservationRow>(
+          'SELECT reservation_id, item_id, quantity, status FROM stock_reservations WHERE reservation_id = $1', [reservationId],
+        );
+        const prior = exists.rows[0];
+        if (!prior) throw new DomainNotFoundError(`Stock reservation not found: ${reservationId}`);
+        await client.query('COMMIT');
+        return StockReservation.create({ ...this.toReservationInput(prior), status: 'RELEASED' });
       }
       const updated = await client.query(
         `UPDATE inventory_items SET reserved_qty = reserved_qty - $2,

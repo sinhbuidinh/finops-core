@@ -28,7 +28,7 @@ describe('InventoryUseCase', () => {
 
   it('delegates reserve and release', async () => {
     await expect(useCase.reserve('sku', 2)).resolves.toBe(reservation);
-    expect(repository.reserve).toHaveBeenCalledWith('sku', 2);
+    expect(repository.reserve).toHaveBeenCalledWith('sku', 2, undefined);
     await expect(useCase.release('r1')).resolves.toBe(reservation);
     expect(repository.release).toHaveBeenCalledWith('r1');
   });

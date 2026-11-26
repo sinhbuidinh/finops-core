@@ -46,6 +46,27 @@ describe('PostgresInventoryRepository', () => {
     expect(releaseClient).toHaveBeenCalledOnce();
   });
 
+  it('replays an active saga reservation without incrementing reserved stock again', async () => {
+    clientQuery.mockImplementation(async (sql: string) => {
+      if (sql.includes('FROM stock_reservations')) return { rows: [{ reservation_id: 'r1', item_id: 'sku', quantity: 2, status: 'ACTIVE' }] };
+      return { rowCount: 1, rows: [] };
+    });
+    await expect(repository.reserve('sku', 2, 'saga-1')).resolves.toMatchObject({ id: 'r1', status: 'ACTIVE' });
+    expect(clientQuery).not.toHaveBeenCalledWith(expect.stringContaining('UPDATE inventory_items'), expect.anything());
+    expect(clientQuery).toHaveBeenCalledWith('COMMIT');
+  });
+
+  it('reactivates a compensated saga reservation so a retry can reserve stock again', async () => {
+    clientQuery.mockImplementation(async (sql: string) => {
+      if (sql.includes('FROM stock_reservations')) return { rows: [{ reservation_id: 'r1', item_id: 'sku', quantity: 2, status: 'RELEASED' }] };
+      if (sql.includes('UPDATE inventory_items')) return { rowCount: 1, rows: [{ item_id: 'sku' }] };
+      return { rowCount: 1, rows: [] };
+    });
+    await expect(repository.reserve('sku', 2, 'saga-1')).resolves.toMatchObject({ id: 'r1', status: 'ACTIVE' });
+    expect(clientQuery).toHaveBeenCalledWith(expect.stringContaining("SET status = 'ACTIVE'"), ['r1']);
+    expect(clientQuery).toHaveBeenCalledWith('COMMIT');
+  });
+
   it('rejects invalid reservations before connecting', async () => {
     await expect(repository.reserve('sku', 0)).rejects.toBeInstanceOf(DomainValidationError);
     expect(pool.connect).not.toHaveBeenCalled();
@@ -99,7 +120,7 @@ describe('PostgresInventoryRepository', () => {
     expect(releaseClient).toHaveBeenCalledOnce();
   });
 
-  it('distinguishes unknown and already released reservations', async () => {
+  it('distinguishes unknown reservations and makes release safely repeatable', async () => {
     clientQuery.mockImplementation(async (sql: string) => {
       if (sql.includes('UPDATE stock_reservations')) return { rowCount: 0, rows: [] };
       return { rowCount: 0, rows: [] };
@@ -107,9 +128,9 @@ describe('PostgresInventoryRepository', () => {
     await expect(repository.release('missing')).rejects.toBeInstanceOf(DomainNotFoundError);
     clientQuery.mockImplementation(async (sql: string) => {
       if (sql.includes('UPDATE stock_reservations')) return { rowCount: 0, rows: [] };
-      return { rowCount: 1, rows: [{}] };
+      return { rowCount: 1, rows: [{ reservation_id: 'r1', item_id: 'sku', quantity: 2, status: 'RELEASED' }] };
     });
-    await expect(repository.release('r1')).rejects.toMatchObject({ code: 'RESERVATION_ALREADY_RELEASED' });
+    await expect(repository.release('r1')).resolves.toMatchObject({ id: 'r1', status: 'RELEASED' });
     expect(releaseClient).toHaveBeenCalledTimes(2);
   });
 
