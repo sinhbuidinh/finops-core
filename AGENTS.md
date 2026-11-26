@@ -1,5 +1,8 @@
 # AGENTS.md
 
+## Architecture
+Read architecture of project from @docs/architecture.md
+
 ## NestJS
 
 This app's version of NestJS is likely newer than what you know. https://docs.nestjs.com/llms.txt indexes its documentation, with a markdown page per chapter.
