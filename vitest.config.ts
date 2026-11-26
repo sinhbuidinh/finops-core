@@ -8,5 +8,10 @@ export default defineConfig({
     globals: true,
     root: './',
     include: ['**/*.spec.ts'],
+    coverage: {
+      include: process.env.COVERAGE_FILES ? JSON.parse(process.env.COVERAGE_FILES) as string[] : undefined,
+      exclude: ['**/*.spec.ts'],
+      ...(process.env.COVERAGE_FILES ? { thresholds: { perFile: true, lines: 80, branches: 70, functions: 80 } } : {}),
+    },
   },
 });
