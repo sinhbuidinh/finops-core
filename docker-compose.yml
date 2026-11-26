@@ -1,0 +1,70 @@
+services:
+  api:
+    build:
+      context: .
+      dockerfile: Dockerfile
+      target: dev
+    container_name: nest_api
+    working_dir: /app
+    environment:
+      NODE_ENV: development
+      DB_HOST: postgres
+      REDIS_HOST: redis
+    env_file:
+      - .env
+    volumes:
+      # Mount toàn bộ code và .git từ host để watch code & Husky hoạt động
+      - .:/app
+      # Tách riêng node_modules để tránh ghi đè/xung đột với thư mục trên host
+      - api_node_modules:/app/node_modules
+    restart: "no"
+    ports:
+      - "${APP_PORT:-3000}:3000"
+    depends_on:
+      postgres:
+        condition: service_healthy
+      redis:
+        condition: service_started
+    networks:
+      - finops_core_vpc
+
+  postgres:
+    image: postgres:16-alpine
+    container_name: nest_postgres
+    restart: unless-stopped
+    environment:
+      POSTGRES_USER: ${DB_USER:-postgres}
+      POSTGRES_PASSWORD: ${DB_PASSWORD:-postgres}
+      POSTGRES_DB: ${DB_NAME:-finops_core}
+    ports:
+      - "${DB_PORT:-5432}:5432"
+    volumes:
+      - postgres_data:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U $${POSTGRES_USER} -d $${POSTGRES_DB}"]
+      interval: 5s
+      timeout: 5s
+      retries: 5
+    networks:
+      - finops_core_vpc
+
+  redis:
+    image: redis:7-alpine
+    container_name: nest_redis
+    restart: unless-stopped
+    command: redis-server --appendonly yes
+    ports:
+      - "${REDIS_PORT:-6379}:6379"
+    volumes:
+      - redis_data:/data
+    networks:
+      - finops_core_vpc
+
+volumes:
+  postgres_data:
+  redis_data:
+  api_node_modules:
+
+networks:
+  finops_core_vpc:
+    driver: bridge
