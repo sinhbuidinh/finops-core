@@ -42,16 +42,16 @@ export class FulfillmentSagaService {
     } catch (error) { await this.idempotency.release(idem, claim.ownerToken).catch(() => undefined); throw error; }
   }
 
-  async getOrder(id: string) {
+  async getOrder(tenantId: string, id: string) {
     const result = await this.pool.query<{ id: string; tenant_id: string; state: string; saga_id: string; created_at: Date }>(
-      'SELECT id, tenant_id, state, saga_id, created_at FROM fulfillment_orders WHERE id = $1', [id],
+      'SELECT id, tenant_id, state, saga_id, created_at FROM fulfillment_orders WHERE tenant_id = $1 AND id = $2', [tenantId, id],
     );
     const order = result.rows[0];
     if (!order) throw new NotFoundException('Order not found');
     return { id: order.id, tenantId: order.tenant_id, state: order.state, sagaId: order.saga_id, createdAt: order.created_at };
   }
 
-  async cancelOrder(id: string, key: string) {
+  async cancelOrder(tenantId: string, id: string, key: string) {
     if (!key?.trim()) throw new BadRequestException('Idempotency-Key header is required');
     const idem = this.key(`orders:${id}:cancel`, key, id);
     const claim = await this.idempotency.acquire(idem);
@@ -63,7 +63,7 @@ export class FulfillmentSagaService {
       let response: { id: string; state: string };
       try {
         await client.query('BEGIN');
-        const result = await client.query<{ id: string; state: string; saga_id: string }>(`SELECT id, state, saga_id FROM fulfillment_orders WHERE id = $1 FOR UPDATE`, [id]);
+        const result = await client.query<{ id: string; state: string; saga_id: string }>(`SELECT id, state, saga_id FROM fulfillment_orders WHERE tenant_id = $1 AND id = $2 FOR UPDATE`, [tenantId, id]);
         const order = result.rows[0];
         if (!order) throw new NotFoundException('Order not found');
         if (order.state !== OrderState.APPROVED) throw new ConflictException(`Order cannot be cancelled from ${order.state}`);

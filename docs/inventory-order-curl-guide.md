@@ -1,6 +1,6 @@
 # Inventory and order flow with curl
 
-This guide walks through the current API from adding stock to placing and tracking an order. The inventory and order must use the same `tenantId`.
+This guide walks through the current API from adding stock to placing and tracking an order. Inventory and order routes require a signed bearer token. The API derives the tenant from the token; a client cannot choose an arbitrary tenant in the request body.
 
 ## 1. Start the API and set example values
 
@@ -17,7 +17,10 @@ In another terminal:
 BASE_URL=http://localhost:3000
 TENANT_ID=tenant-1
 SKU=sku-1
+TOKEN=<access-token-from-your-auth-provider>
 ```
+
+The token must be an HS256 JWT signed with the API's `AUTH_JWT_SECRET`, with a non-empty `sub`, a future `exp`, and either a `tenant_id` claim or a `tenant_ids` array. Configure the same secret (at least 32 bytes) in the API. If your identity provider issues a different algorithm or token format, connect its verifier instead of adapting clients to trust an unsigned tenant header. Set `AUTH_JWT_ISSUER` and `AUTH_JWT_AUDIENCE` when those claims are part of your token contract. For a user with multiple tenant memberships, send `X-Tenant-Id` to select one; the guard rejects a tenant that is not in the signed membership claims. A user with one membership can omit that header.
 
 ## 2. Create inventory for the tenant
 
@@ -25,8 +28,10 @@ SKU=sku-1
 
 ```sh
 curl -i -X POST "$BASE_URL/inventory/items" \
+  -H "Authorization: Bearer $TOKEN" \
+  -H "X-Tenant-Id: $TENANT_ID" \
   -H 'Content-Type: application/json' \
-  -d '{"tenantId":"tenant-1","id":"sku-1","totalQty":25}'
+  -d '{"id":"sku-1","totalQty":25}'
 ```
 
 Expected response fields include `tenantId`, `id`, `totalQty`, `reservedQty`, and `availableQty`. A duplicate `(tenantId, id)` returns a conflict; use a different SKU or tenant.
@@ -34,17 +39,21 @@ Expected response fields include `tenantId`, `id`, `totalQty`, `reservedQty`, an
 ## 3. Check tenant inventory
 
 ```sh
-curl -i "$BASE_URL/inventory/tenants/$TENANT_ID/items/$SKU"
+curl -i "$BASE_URL/inventory/items/$SKU" \
+  -H "Authorization: Bearer $TOKEN" \
+  -H "X-Tenant-Id: $TENANT_ID"
 ```
 
-An item belonging to another tenant is not visible through this path and returns not found.
+The item lookup is scoped to the authenticated tenant. An item belonging to another tenant is not visible and returns not found.
 
 ## 4. Optional: make a direct stock reservation
 
 Order creation reserves inventory automatically. Usually skip this step before placing an order; a manual reservation reduces the stock available to orders until it is released.
 
 ```sh
-curl -i -X POST "$BASE_URL/inventory/tenants/$TENANT_ID/items/$SKU/reservations" \
+curl -i -X POST "$BASE_URL/inventory/items/$SKU/reservations" \
+  -H "Authorization: Bearer $TOKEN" \
+  -H "X-Tenant-Id: $TENANT_ID" \
   -H 'Content-Type: application/json' \
   -d '{"quantity":2}'
 ```
@@ -53,7 +62,9 @@ Copy the returned reservation `id` to release it:
 
 ```sh
 RESERVATION_ID=<reservation-id-from-response>
-curl -i -X POST "$BASE_URL/inventory/tenants/$TENANT_ID/reservations/$RESERVATION_ID/release"
+curl -i -X POST "$BASE_URL/inventory/reservations/$RESERVATION_ID/release" \
+  -H "Authorization: Bearer $TOKEN" \
+  -H "X-Tenant-Id: $TENANT_ID"
 ```
 
 The release route scopes the reservation by tenant. Releasing an unknown reservation or one from a different tenant returns not found.
@@ -79,10 +90,11 @@ Send a unique `Idempotency-Key` for this create request. If the client retries t
 
 ```sh
 curl -i -X POST "$BASE_URL/orders" \
+  -H "Authorization: Bearer $TOKEN" \
+  -H "X-Tenant-Id: $TENANT_ID" \
   -H 'Content-Type: application/json' \
   -H 'Idempotency-Key: order-tenant-1-001' \
   -d '{
-    "tenantId":"tenant-1",
     "inventoryItemId":"sku-1",
     "quantity":2,
     "payment":{
@@ -107,8 +119,12 @@ The initial response can say `APPROVED`. A background worker then moves the orde
 ## 7. Poll for order status and verify stock
 
 ```sh
-curl -i "$BASE_URL/orders/$ORDER_ID"
-curl -i "$BASE_URL/inventory/tenants/$TENANT_ID/items/$SKU"
+curl -i "$BASE_URL/orders/$ORDER_ID" \
+  -H "Authorization: Bearer $TOKEN" \
+  -H "X-Tenant-Id: $TENANT_ID"
+curl -i "$BASE_URL/inventory/items/$SKU" \
+  -H "Authorization: Bearer $TOKEN" \
+  -H "X-Tenant-Id: $TENANT_ID"
 ```
 
 When confirmed, the inventory response should show `reservedQty` increased by the order quantity and `availableQty` decreased by that amount. If a later saga step fails after reservation, compensation releases the reservation. The order eventually becomes `FAILED` after retries are exhausted.
@@ -125,6 +141,8 @@ Cancellation is accepted only while the order is still `APPROVED` and its saga j
 
 ```sh
 curl -i -X POST "$BASE_URL/orders/$ORDER_ID/cancel" \
+  -H "Authorization: Bearer $TOKEN" \
+  -H "X-Tenant-Id: $TENANT_ID" \
   -H 'Idempotency-Key: cancel-order-tenant-1-001'
 ```
 
@@ -136,4 +154,4 @@ Use a unique key for each cancellation request and reuse it only when retrying t
 - To change an order before fulfillment starts, cancel it and submit a new order with a new idempotency key and order/payment IDs.
 - To adjust inventory quantities, the API needs an inventory adjustment endpoint. Do not use the reservation release route to adjust stock; it only reverses a specific reservation.
 - Do not reserve inventory manually before creating an order unless you intend to hold that additional quantity separately.
-- Creating inventory, reserving, and releasing inventory are tenant-scoped. Use the exact same tenant ID on inventory and order requests.
+- Creating inventory, reserving, releasing inventory, reading orders, and cancelling orders are scoped to the tenant resolved from the signed token and optional `X-Tenant-Id` selector.

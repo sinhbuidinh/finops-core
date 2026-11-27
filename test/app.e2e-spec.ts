@@ -1,5 +1,6 @@
 import { Test, TestingModule } from '@nestjs/testing';
 import { INestApplication } from '@nestjs/common';
+import { createHmac } from 'node:crypto';
 import request from 'supertest';
 import { App } from 'supertest/types.js';
 import { FulfillmentSagaService } from '../src/modules/fulfillment-saga/fulfillment-saga.service.js';
@@ -8,6 +9,10 @@ import { AppController } from '../src/app.controller.js';
 import { AppService } from '../src/app.service.js';
 import { FulfillmentSaga } from '../src/modules/fulfillment-saga/application/fulfillment-saga.js';
 import type { SagaStep } from '../src/modules/fulfillment-saga/application/saga-step.js';
+import { TenantModule } from '../src/shared/infrastructure/tenant/tenant.module.js';
+
+const testJwtSecret = 'test-only-secret-with-more-than-32-bytes';
+const tenantToken = createTenantToken('tenant-1');
 
 describe('AppController (e2e)', () => {
   let app: INestApplication<App>;
@@ -58,18 +63,20 @@ describe('Orders HTTP (e2e)', () => {
       if (order.state !== 'FAILED') order.state = 'CONFIRMED';
       return accepted;
     }),
-    getOrder: vi.fn(async (id: string) => {
+    getOrder: vi.fn(async (_tenantId: string, id: string) => {
       const order = orders.get(id);
       if (!order) throw new Error('Order not found');
       return order;
     }),
-    cancelOrder: vi.fn(async (id: string) => ({ id, state: 'CANCELLED' })),
+    cancelOrder: vi.fn(async (_tenantId: string, id: string) => ({ id, state: 'CANCELLED' })),
   };
 
   beforeEach(async () => {
     orders.clear();
     reservedQuantity = 0;
+    process.env.AUTH_JWT_SECRET = testJwtSecret;
     const moduleFixture = await Test.createTestingModule({
+      imports: [TenantModule],
       controllers: [OrdersController],
       providers: [{ provide: FulfillmentSagaService, useValue: service }],
     })
@@ -81,22 +88,40 @@ describe('Orders HTTP (e2e)', () => {
   afterEach(async () => { await app?.close(); });
 
   it('creates an order and reports successful fulfillment', async () => {
-    const created = await request(app.getHttpServer()).post('/orders').set('Idempotency-Key', 'happy-1')
-      .send({ tenantId: 'tenant-1', inventoryItemId: 'sku-1', quantity: 1, payment: { id: 'payment-1', lines: [] } })
+    const created = await request(app.getHttpServer()).post('/orders').set('Authorization', `Bearer ${tenantToken}`).set('X-Tenant-Id', 'tenant-1').set('Idempotency-Key', 'happy-1')
+      .send({ inventoryItemId: 'sku-1', quantity: 1, payment: { id: 'payment-1', lines: [] } })
       .expect(202);
     expect(created.body.state).toBe('APPROVED');
-    await request(app.getHttpServer()).get(`/orders/${created.body.id}`).expect(200).expect(({ body }) => {
+    await request(app.getHttpServer()).get(`/orders/${created.body.id}`).set('Authorization', `Bearer ${tenantToken}`).expect(200).expect(({ body }) => {
       expect(body.state).toBe('CONFIRMED');
     });
   });
 
+  it('requires authentication and rejects tenant selection outside signed memberships', async () => {
+    await request(app.getHttpServer()).post('/orders').set('Idempotency-Key', 'unauthenticated')
+      .send({ inventoryItemId: 'sku-1', quantity: 1, payment: { id: 'payment-unauthenticated', lines: [] } })
+      .expect(401);
+
+    await request(app.getHttpServer()).post('/orders').set('Authorization', `Bearer ${tenantToken}`)
+      .set('X-Tenant-Id', 'tenant-2').set('Idempotency-Key', 'wrong-tenant')
+      .send({ inventoryItemId: 'sku-1', quantity: 1, payment: { id: 'payment-wrong-tenant', lines: [] } })
+      .expect(403);
+  });
+
   it('exposes the failed state after payment failure rollback', async () => {
-    const created = await request(app.getHttpServer()).post('/orders').set('Idempotency-Key', 'fail-1')
-      .send({ tenantId: 'tenant-1', inventoryItemId: 'sku-1', quantity: 1, payment: { id: 'payment-fail', lines: [] } })
+    const created = await request(app.getHttpServer()).post('/orders').set('Authorization', `Bearer ${tenantToken}`).set('Idempotency-Key', 'fail-1')
+      .send({ inventoryItemId: 'sku-1', quantity: 1, payment: { id: 'payment-fail', lines: [] } })
       .expect(202);
-    await request(app.getHttpServer()).get(`/orders/${created.body.id}`).expect(200).expect(({ body }) => {
+    await request(app.getHttpServer()).get(`/orders/${created.body.id}`).set('Authorization', `Bearer ${tenantToken}`).expect(200).expect(({ body }) => {
       expect(body.state).toBe('FAILED');
     });
     expect(reservedQuantity).toBe(0);
   });
 });
+
+function createTenantToken(tenantId: string): string {
+  const header = Buffer.from(JSON.stringify({ alg: 'HS256', typ: 'JWT' })).toString('base64url');
+  const payload = Buffer.from(JSON.stringify({ sub: 'e2e-user', tenant_id: tenantId, exp: Math.floor(Date.now() / 1000) + 300 })).toString('base64url');
+  const signature = createHmac('sha256', testJwtSecret).update(`${header}.${payload}`).digest('base64url');
+  return `${header}.${payload}.${signature}`;
+}

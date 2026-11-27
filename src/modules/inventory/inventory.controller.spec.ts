@@ -9,7 +9,7 @@ describe('InventoryController', () => {
   beforeEach(() => vi.clearAllMocks());
 
   it('forwards each route operation to the service', () => {
-    controller.createItem({ tenantId: 'tenant-1', id: 'sku', totalQty: 2 });
+    controller.createItem('tenant-1', { id: 'sku', totalQty: 2 });
     controller.getItem('tenant-1', 'sku');
     controller.reserve('tenant-1', 'sku', 1);
     controller.release('tenant-1', 'r1');

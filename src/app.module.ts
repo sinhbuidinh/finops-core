@@ -9,12 +9,14 @@ import { DatabaseModule } from './shared/infrastructure/database/database.module
 import { LedgerModule } from './modules/ledger/ledger.module.js';
 import { InventoryModule } from './modules/inventory/inventory.module.js';
 import { FulfillmentSagaModule } from './modules/fulfillment-saga/fulfillment-saga.module.js';
+import { TenantModule } from './shared/infrastructure/tenant/tenant.module.js';
 
 export const { ObserveModule, ObserveInstrument } = createObserveModule();
 
 @Module({
   imports: [
     DatabaseModule,
+    TenantModule,
     IdempotencyModule,
     OutboxModule,
     LedgerModule,
