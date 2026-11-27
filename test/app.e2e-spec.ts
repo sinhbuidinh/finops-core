@@ -10,10 +10,12 @@ import { AppService } from '../src/app.service.js';
 import { FulfillmentSaga } from '../src/modules/fulfillment-saga/application/fulfillment-saga.js';
 import type { SagaStep } from '../src/modules/fulfillment-saga/application/saga-step.js';
 import { TenantModule } from '../src/shared/infrastructure/tenant/tenant.module.js';
+import { AuthUserRepository } from '../src/shared/infrastructure/tenant/auth-user.repository.js';
+import { USER_ROLE } from '../src/shared/infrastructure/tenant/user-role.js';
 
 const testJwtSecret = 'test-only-secret-with-more-than-32-bytes';
 const tenantToken = createTenantToken('tenant-1');
-const multiTenantToken = createTenantToken(['tenant-1', 'tenant-2']);
+const multiTenantToken = createTenantToken(['tenant-1', 'tenant-2'], 'multi-user');
 
 describe('AppController (e2e)', () => {
   let app: INestApplication<App>;
@@ -81,6 +83,11 @@ describe('Orders HTTP (e2e)', () => {
       controllers: [OrdersController],
       providers: [{ provide: FulfillmentSagaService, useValue: service }],
     })
+      .overrideProvider(AuthUserRepository)
+      .useValue({ findById: vi.fn(async (id: string) => ['e2e-user', 'multi-user'].includes(id) ? {
+        id, username: id, passwordHash: '', role: null,
+        tenantRoles: (id === 'multi-user' ? ['tenant-1', 'tenant-2'] : ['tenant-1']).map((tenantId) => ({ tenantId, role: USER_ROLE.OPERATOR })), active: true,
+      } : undefined) })
       .compile();
     app = moduleFixture.createNestApplication();
     await app.init();
@@ -98,7 +105,7 @@ describe('Orders HTTP (e2e)', () => {
     });
   });
 
-  it('requires authentication and rejects tenant selection outside signed memberships', async () => {
+  it('requires authentication and rejects tenant selection outside stored memberships', async () => {
     await request(app.getHttpServer()).post('/orders').set('Idempotency-Key', 'unauthenticated')
       .send({ inventoryItemId: 'sku-1', quantity: 1, payment: { id: 'payment-unauthenticated', lines: [] } })
       .expect(401);
@@ -109,7 +116,7 @@ describe('Orders HTTP (e2e)', () => {
       .expect(403);
   });
 
-  it('uses one token to act in each tenant listed in its signed membership claim', async () => {
+  it('uses one token to act in each tenant assigned to the user', async () => {
     for (const tenantId of ['tenant-1', 'tenant-2']) {
       const response = await request(app.getHttpServer()).post('/orders')
         .set('Authorization', `Bearer ${multiTenantToken}`).set('X-Tenant-Id', tenantId)
@@ -137,10 +144,10 @@ describe('Orders HTTP (e2e)', () => {
   });
 });
 
-function createTenantToken(tenant: string | string[]): string {
+function createTenantToken(tenant: string | string[], subject = 'e2e-user'): string {
   const header = Buffer.from(JSON.stringify({ alg: 'HS256', typ: 'JWT' })).toString('base64url');
   const tenantClaims = Array.isArray(tenant) ? { tenant_ids: tenant } : { tenant_id: tenant };
-  const payload = Buffer.from(JSON.stringify({ sub: 'e2e-user', ...tenantClaims, exp: Math.floor(Date.now() / 1000) + 300 })).toString('base64url');
+  const payload = Buffer.from(JSON.stringify({ sub: subject, ...tenantClaims, exp: Math.floor(Date.now() / 1000) + 300 })).toString('base64url');
   const signature = createHmac('sha256', testJwtSecret).update(`${header}.${payload}`).digest('base64url');
   return `${header}.${payload}.${signature}`;
 }

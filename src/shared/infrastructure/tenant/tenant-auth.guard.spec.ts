@@ -2,9 +2,11 @@ import { createHmac } from 'node:crypto';
 import { ForbiddenException, UnauthorizedException } from '@nestjs/common';
 import { TenantAuthGuard } from './tenant-auth.guard.js';
 import { TenantContext } from './tenant-context.js';
+import { USER_ROLE } from './user-role.js';
 
 describe('TenantAuthGuard', () => {
   const secret = 'unit-test-secret-with-more-than-32-bytes';
+  const records = new Map<string, { id: string; username: string; role: string | null; tenantRoles: { tenantId: string; role: string }[]; active: boolean; passwordHash: string }>();
   let context: TenantContext;
   let guard: TenantAuthGuard;
 
@@ -12,109 +14,104 @@ describe('TenantAuthGuard', () => {
     vi.stubEnv('AUTH_JWT_SECRET', secret);
     vi.stubEnv('AUTH_JWT_ISSUER', '');
     vi.stubEnv('AUTH_JWT_AUDIENCE', '');
+    records.clear();
+    records.set('user-1', { id: 'user-1', username: 'user', role: null,
+      tenantRoles: [{ tenantId: 'tenant-1', role: USER_ROLE.FINANCE_MANAGER }, { tenantId: 'tenant-2', role: USER_ROLE.APPROVER }], active: true, passwordHash: '' });
+    records.set('admin-1', { id: 'admin-1', username: 'root', role: USER_ROLE.SUPER_ADMIN, tenantRoles: [], active: true, passwordHash: '' });
     context = new TenantContext();
-    guard = new TenantAuthGuard(context);
+    guard = new TenantAuthGuard(context, { findById: async (id: string) => records.get(id) } as never);
   });
 
   afterEach(() => vi.unstubAllEnvs());
 
-  it('resolves the single tenant from a signed token into request context', () => {
-    const request = makeRequest(token({ sub: 'user-1', tenant_id: 'tenant-1' }));
-    const tenantId = context.run(() => {
-      expect(guard.canActivate(makeExecutionContext(request))).toBe(true);
+  it('resolves an assigned tenant into request and async context', async () => {
+    const request = makeRequest(token({ sub: 'user-1' }), 'tenant-2');
+    const tenantId = await context.run(async () => {
+      expect(await guard.canActivate(makeExecutionContext(request))).toBe(true);
       return context.requireTenantId();
     });
-    expect(tenantId).toBe('tenant-1');
-    expect(request.tenantId).toBe('tenant-1');
+    expect(tenantId).toBe('tenant-2');
+    expect(request.tenantId).toBe('tenant-2');
+    expect(request.user?.role).toBe(USER_ROLE.APPROVER);
   });
 
-  it('allows selecting only a tenant in the token membership list', () => {
-    const request = makeRequest(token({ sub: 'user-1', tenant_ids: ['tenant-1', 'tenant-2'] }), 'tenant-2');
-    expect(context.run(() => {
-      guard.canActivate(makeExecutionContext(request));
-      return context.requireTenantId();
-    })).toBe('tenant-2');
+  it('rejects unassigned tenant selection and requires a selector for multiple assignments', async () => {
+    const forbidden = makeRequest(token({ sub: 'user-1' }), 'tenant-3');
+    await expect(context.run(() => guard.canActivate(makeExecutionContext(forbidden)))).rejects.toThrow(ForbiddenException);
+    const missingSelector = makeRequest(token({ sub: 'user-1' }));
+    await expect(context.run(() => guard.canActivate(makeExecutionContext(missingSelector)))).rejects.toThrow(UnauthorizedException);
   });
 
-  it('rejects missing credentials, invalid signatures, expired tokens and unauthorized tenant selection', () => {
-    const missing = makeRequest(undefined);
-    expect(() => context.run(() => guard.canActivate(makeExecutionContext(missing)))).toThrow(UnauthorizedException);
-
-    const validToken = token({ sub: 'user-1', tenant_id: 'tenant-1' });
-    const invalid = makeRequest(`${validToken.slice(0, validToken.lastIndexOf('.') + 1)}${Buffer.alloc(32).toString('base64url')}`);
-    expect(() => context.run(() => guard.canActivate(makeExecutionContext(invalid)))).toThrow(UnauthorizedException);
-
-    const expired = makeRequest(token({ sub: 'user-1', tenant_id: 'tenant-1', exp: 1 }));
-    expect(() => context.run(() => guard.canActivate(makeExecutionContext(expired)))).toThrow(UnauthorizedException);
-
-    const forbidden = makeRequest(token({ sub: 'user-1', tenant_id: 'tenant-1' }), 'tenant-2');
-    expect(() => context.run(() => guard.canActivate(makeExecutionContext(forbidden)))).toThrow(ForbiddenException);
+  it('allows super admins to select any tenant and requires an explicit selector', async () => {
+    const request = makeRequest(token({ sub: 'admin-1' }), 'arbitrary-tenant');
+    await context.run(() => guard.canActivate(makeExecutionContext(request)));
+    expect(request.tenantId).toBe('arbitrary-tenant');
+    await expect(context.run(() => guard.canActivate(makeExecutionContext(makeRequest(token({ sub: 'admin-1' }))))))
+      .rejects.toThrow(UnauthorizedException);
   });
 
-  it('requires a tenant selector when the user belongs to multiple tenants', () => {
-    const request = makeRequest(token({ sub: 'user-1', tenant_ids: ['tenant-1', 'tenant-2'] }));
-    expect(() => context.run(() => guard.canActivate(makeExecutionContext(request)))).toThrow(UnauthorizedException);
+  it('rejects invalid signatures, expired tokens, deleted users, and deactivated users', async () => {
+    const valid = token({ sub: 'user-1' });
+    const invalid = `${valid.slice(0, valid.lastIndexOf('.') + 1)}${Buffer.alloc(32).toString('base64url')}`;
+    await expect(guard.canActivate(makeExecutionContext(makeRequest(invalid)))).rejects.toThrow(UnauthorizedException);
+    await expect(guard.canActivate(makeExecutionContext(makeRequest(token({ sub: 'user-1', exp: 1 }))))).rejects.toThrow(UnauthorizedException);
+    await expect(guard.canActivate(makeExecutionContext(makeRequest(token({ sub: 'deleted' }))))).rejects.toThrow(UnauthorizedException);
+    records.get('user-1')!.active = false;
+    await expect(guard.canActivate(makeExecutionContext(makeRequest(token({ sub: 'user-1' })))))
+      .rejects.toThrow(UnauthorizedException);
   });
 
-  it('rejects empty tenant selectors, malformed JWT headers, and missing memberships', () => {
-    const emptySelector = makeRequest(token({ sub: 'user-1', tenant_id: 'tenant-1' }));
-    emptySelector.headers['x-tenant-id'] = '   ';
-    expect(() => context.run(() => guard.canActivate(makeExecutionContext(emptySelector)))).toThrow(UnauthorizedException);
-
-    const unsupportedAlgorithm = makeRequest(token({ sub: 'user-1', tenant_id: 'tenant-1' }, { alg: 'none' }));
-    expect(() => context.run(() => guard.canActivate(makeExecutionContext(unsupportedAlgorithm)))).toThrow(UnauthorizedException);
-
-    const noMembership = makeRequest(token({ sub: 'user-1', tenant_ids: [] }));
-    expect(() => context.run(() => guard.canActivate(makeExecutionContext(noMembership)))).toThrow(UnauthorizedException);
-
-    const malformedJson = makeRequest(malformedToken());
-    expect(() => context.run(() => guard.canActivate(makeExecutionContext(malformedJson)))).toThrow(UnauthorizedException);
+  it('rejects missing, malformed, unsupported, and not-yet-valid bearer tokens', async () => {
+    await expect(guard.authenticate(makeRequest(undefined) as never)).rejects.toThrow(UnauthorizedException);
+    await expect(guard.authenticate(makeRequest('Bearer a.b') as never)).rejects.toThrow(UnauthorizedException);
+    const malformed = `${Buffer.from('{').toString('base64url')}.e30.${Buffer.alloc(32).toString('base64url')}`;
+    await expect(guard.authenticate(makeRequest(malformed) as never)).rejects.toThrow(UnauthorizedException);
+    const unsupported = token({ sub: 'user-1' }).split('.');
+    unsupported[0] = Buffer.from(JSON.stringify({ alg: 'none' })).toString('base64url');
+    await expect(guard.authenticate(makeRequest(unsupported.join('.')) as never)).rejects.toThrow(UnauthorizedException);
+    await expect(guard.authenticate(makeRequest(token({ sub: 'user-1', nbf: Math.floor(Date.now() / 1000) + 60 })) as never))
+      .rejects.toThrow(UnauthorizedException);
   });
 
-  it('requires a sufficiently long signing secret', () => {
-    vi.stubEnv('AUTH_JWT_SECRET', 'too-short');
-    const request = makeRequest(token({ sub: 'user-1', tenant_id: 'tenant-1' }));
-    expect(() => context.run(() => guard.canActivate(makeExecutionContext(request))))
-      .toThrow('AUTH_JWT_SECRET must be configured with at least 32 bytes');
+  it('rejects missing or weak JWT secrets and empty tenant selectors', async () => {
+    vi.stubEnv('AUTH_JWT_SECRET', 'short');
+    await expect(guard.authenticate(makeRequest(token({ sub: 'user-1' })) as never)).rejects.toThrow('at least 32 bytes');
+    vi.stubEnv('AUTH_JWT_SECRET', secret);
+    const emptyTenant = makeRequest(token({ sub: 'user-1' }));
+    emptyTenant.headers['x-tenant-id'] = '  ';
+    await expect(guard.canActivate(makeExecutionContext(emptyTenant))).rejects.toThrow('must not be empty');
   });
 
-  it('enforces configured issuer and audience claims', () => {
-    vi.stubEnv('AUTH_JWT_ISSUER', 'https://issuer.example');
+  it('selects the only tenant automatically and rejects tokens with invalid subject claims', async () => {
+    const single = records.get('user-1')!;
+    single.tenantRoles = [{ tenantId: 'tenant-only', role: USER_ROLE.OPERATOR }];
+    const request = makeRequest(token({ sub: 'user-1' }));
+    await context.run(() => guard.canActivate(makeExecutionContext(request)));
+    expect(request.tenantId).toBe('tenant-only');
+    await expect(guard.authenticate(makeRequest(token({ sub: 5 })) as never)).rejects.toThrow(UnauthorizedException);
+  });
+
+  it('enforces configured issuer and audience', async () => {
+    vi.stubEnv('AUTH_JWT_ISSUER', 'https://issuer.test');
     vi.stubEnv('AUTH_JWT_AUDIENCE', 'finops-api');
-
-    const valid = makeRequest(token({
-      sub: 'user-1', tenant_id: 'tenant-1', iss: 'https://issuer.example', aud: ['finops-api'],
-    }));
-    expect(context.run(() => guard.canActivate(makeExecutionContext(valid)))).toBe(true);
-
-    const wrongIssuer = makeRequest(token({ sub: 'user-1', tenant_id: 'tenant-1', iss: 'https://wrong.example', aud: 'finops-api' }));
-    expect(() => context.run(() => guard.canActivate(makeExecutionContext(wrongIssuer)))).toThrow(UnauthorizedException);
-
-    const wrongAudience = makeRequest(token({ sub: 'user-1', tenant_id: 'tenant-1', iss: 'https://issuer.example', aud: 'other-api' }));
-    expect(() => context.run(() => guard.canActivate(makeExecutionContext(wrongAudience)))).toThrow(UnauthorizedException);
+    await expect(guard.canActivate(makeExecutionContext(makeRequest(token({ sub: 'user-1', iss: 'https://bad.test', aud: 'finops-api' })))))
+      .rejects.toThrow(UnauthorizedException);
+    await expect(guard.canActivate(makeExecutionContext(makeRequest(token({ sub: 'user-1', iss: 'https://issuer.test', aud: 'wrong' })))))
+      .rejects.toThrow(UnauthorizedException);
+    expect(await guard.authenticate(makeRequest(token({ sub: 'user-1', iss: 'https://issuer.test', aud: ['finops-api'] })) as never)).toMatchObject({ id: 'user-1' });
   });
 
-  function token(claims: Record<string, unknown>, headerClaims: Record<string, unknown> = { alg: 'HS256', typ: 'JWT' }): string {
-    const header = Buffer.from(JSON.stringify(headerClaims)).toString('base64url');
+  function token(claims: Record<string, unknown>): string {
+    const header = Buffer.from(JSON.stringify({ alg: 'HS256', typ: 'JWT' })).toString('base64url');
     const payload = Buffer.from(JSON.stringify({ exp: Math.floor(Date.now() / 1000) + 300, ...claims })).toString('base64url');
     const signature = createHmac('sha256', secret).update(`${header}.${payload}`).digest('base64url');
     return `${header}.${payload}.${signature}`;
   }
 
-  function malformedToken(): string {
-    const header = Buffer.from('{').toString('base64url');
-    const payload = Buffer.from(JSON.stringify({ sub: 'user-1', tenant_id: 'tenant-1', exp: Math.floor(Date.now() / 1000) + 300 })).toString('base64url');
-    const signature = createHmac('sha256', secret).update(`${header}.${payload}`).digest('base64url');
-    return `${header}.${payload}.${signature}`;
-  }
-
-  function makeRequest(token: string | undefined, tenantId?: string) {
-    return {
-      headers: {
-        authorization: token ? `Bearer ${token}` : undefined,
-        ...(tenantId ? { 'x-tenant-id': tenantId } : {}),
-      },
-    } as { headers: Record<string, string | undefined>; tenantId?: string };
+  function makeRequest(jwt: string | undefined, tenantId?: string) {
+    return { headers: { authorization: jwt ? `Bearer ${jwt}` : undefined, ...(tenantId ? { 'x-tenant-id': tenantId } : {}) } } as {
+      headers: Record<string, string | undefined>; tenantId?: string; user?: { role: string };
+    };
   }
 
   function makeExecutionContext(request: unknown) {

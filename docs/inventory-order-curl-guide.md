@@ -20,15 +20,86 @@ SKU=sku-1
 TOKEN=<access-token-from-your-auth-provider>
 ```
 
-The token must be an HS256 JWT signed with the API's `AUTH_JWT_SECRET`, with a non-empty `sub`, a future `exp`, and either a `tenant_id` claim or a `tenant_ids` array. Configure the same secret (at least 32 bytes) in the API. If your identity provider issues a different algorithm or token format, connect its verifier instead of adapting clients to trust an unsigned tenant header. Set `AUTH_JWT_ISSUER` and `AUTH_JWT_AUDIENCE` when those claims are part of your token contract.
+Sign in through `POST /auth/login` with JSON `{"username":"...","password":"..."}`. Run `npm run db:migrate`, set an `AUTH_JWT_SECRET` of at least 32 bytes, and configure `AUTH_BOOTSTRAP_TOKEN`. Call `POST /auth/bootstrap` with that token in `X-Bootstrap-Token` and a username/password (at least 12 characters) to create the single super administrator. Regular users may already exist, but bootstrap returns a conflict once a super administrator account exists. After bootstrap, remove `AUTH_BOOTSTRAP_TOKEN`.
 
-One token can authorize several tenants when the trusted issuer includes each membership in `tenant_ids`:
+For the first administrator, configure the secret values before starting the API and use:
 
-```json
-{"sub":"user-123","tenant_ids":["tenant-1","tenant-2"],"exp":<future-unix-time>}
+```sh
+curl -i -X POST http://localhost:3000/auth/bootstrap \
+  -H "X-Bootstrap-Token: $AUTH_BOOTSTRAP_TOKEN" \
+  -H 'Content-Type: application/json' \
+  -d '{"username":"admin@example.com","password":"use-a-long-unique-password"}'
 ```
 
-For multi-tenant tokens, send `X-Tenant-Id` on each request to select the active tenant. The guard rejects a tenant that is not in the signed membership claims. A token with a single `tenant_id` can omit the header.
+Sign in to receive a token:
+
+```sh
+curl -i -X POST "$BASE_URL/auth/login" \
+  -H 'Content-Type: application/json' \
+  -d '{"username":"admin@example.com","password":"use-a-long-unique-password"}'
+```
+
+A super administrator can create users through `POST /auth/users`. Roles are assigned per tenant, so the same account can have different roles in different tenants. The built-in role list is `tenant_admin`, `finance_manager`, `approver`, and `operator`; `super_admin` is a global role and has no tenant assignments. `tenant_admin` can list users and update their role in that tenant. Set `AUTH_JWT_ISSUER` and `AUTH_JWT_AUDIENCE` when required; these claims are included in login tokens when configured.
+
+For the examples below, log in as the super administrator. These commands use `jq` to read `accessToken` from the JSON response:
+
+```sh
+ADMIN_TOKEN=$(curl -s -X POST "$BASE_URL/auth/login" \
+  -H 'Content-Type: application/json' \
+  -d '{"username":"admin@example.com","password":"use-a-long-unique-password"}' | jq -r .accessToken)
+```
+
+Create a tenant administrator for one tenant:
+
+```sh
+curl -i -X POST "$BASE_URL/auth/users" \
+  -H "Authorization: Bearer $ADMIN_TOKEN" \
+  -H 'Content-Type: application/json' \
+  -d '{"username":"one-tenant@example.com","password":"a-unique-password-123","tenants":[{"tenantId":"tenant-1","role":"tenant_admin"}]}'
+```
+
+Create a user with a different role in each of two tenants:
+
+```sh
+curl -i -X POST "$BASE_URL/auth/users" \
+  -H "Authorization: Bearer $ADMIN_TOKEN" \
+  -H 'Content-Type: application/json' \
+  -d '{"username":"multi-tenant@example.com","password":"another-unique-password-123","tenants":[{"tenantId":"tenant-1","role":"approver"},{"tenantId":"tenant-2","role":"finance_manager"}]}'
+```
+
+Each regular user logs in separately with `POST /auth/login`. Use the returned token with a tenant ID they are assigned to; for a multi-tenant user, select the active tenant on each request with `X-Tenant-Id`:
+
+```sh
+USER_TOKEN=$(curl -s -X POST "$BASE_URL/auth/login" \
+  -H 'Content-Type: application/json' \
+  -d '{"username":"multi-tenant@example.com","password":"another-unique-password-123"}' | jq -r .accessToken)
+
+curl -i "$BASE_URL/inventory/items/$SKU" \
+  -H "Authorization: Bearer $USER_TOKEN" \
+  -H 'X-Tenant-Id: tenant-2'
+```
+
+Requests for an unassigned tenant are rejected. Super administrators can select any tenant and must also send `X-Tenant-Id` for tenant-scoped requests.
+
+After signing in as the one-tenant administrator, list that tenant's users and change a user's role within that tenant:
+
+```sh
+TENANT_ADMIN_TOKEN=$(curl -s -X POST "$BASE_URL/auth/login" \
+  -H 'Content-Type: application/json' \
+  -d '{"username":"one-tenant@example.com","password":"a-unique-password-123"}' | jq -r .accessToken)
+
+curl -i "$BASE_URL/auth/tenants/tenant-1/users" \
+  -H "Authorization: Bearer $TENANT_ADMIN_TOKEN"
+
+curl -i -X PATCH "$BASE_URL/auth/tenants/tenant-1/users/<user-id>" \
+  -H "Authorization: Bearer $TENANT_ADMIN_TOKEN" \
+  -H 'Content-Type: application/json' \
+  -d '{"role":"approver"}'
+```
+
+The list and update routes return 403 unless the caller is a `tenant_admin` of that tenant or a `super_admin`. The role update changes only that tenant assignment.
+
+Every request reloads the account and tenant memberships from PostgreSQL. Disabled or deleted accounts lose access immediately.
 
 ## 2. Create inventory for the tenant
 

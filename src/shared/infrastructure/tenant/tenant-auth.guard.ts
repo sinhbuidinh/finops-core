@@ -2,45 +2,56 @@ import { createHmac, timingSafeEqual } from 'node:crypto';
 import { CanActivate, ExecutionContext, ForbiddenException, Injectable, UnauthorizedException } from '@nestjs/common';
 import type { Request } from 'express';
 import { TenantContext } from './tenant-context.js';
+import { AuthUserRepository, type AuthUser } from './auth-user.repository.js';
+import { USER_ROLE } from './user-role.js';
 
 declare module 'express-serve-static-core' {
-  interface Request { tenantId?: string; }
+  interface Request { tenantId?: string; user?: { id: string; username: string; role: string }; }
 }
 
 interface TenantJwtClaims {
   sub?: unknown;
   exp?: unknown;
   nbf?: unknown;
-  tenant_id?: unknown;
-  tenant_ids?: unknown;
   iss?: unknown;
   aud?: unknown;
 }
 
 @Injectable()
 export class TenantAuthGuard implements CanActivate {
-  constructor(private readonly tenantContext: TenantContext) {}
+  constructor(private readonly tenantContext: TenantContext, private readonly users: AuthUserRepository) {}
 
-  canActivate(context: ExecutionContext): boolean {
+  async canActivate(context: ExecutionContext): Promise<boolean> {
     const request = context.switchToHttp().getRequest<Request>();
-    const claims = verifyBearerToken(request.headers.authorization, process.env.AUTH_JWT_SECRET);
-    verifyConfiguredIssuerAndAudience(claims);
-
-    const allowedTenants = getTenantIds(claims);
+    const user = await this.authenticate(request);
     const requestedTenant = request.headers['x-tenant-id'];
     const tenantId = typeof requestedTenant === 'string' ? requestedTenant.trim() : undefined;
     if (requestedTenant !== undefined && !tenantId) throw new UnauthorizedException('X-Tenant-Id must not be empty');
-    if (tenantId && !allowedTenants.includes(tenantId)) {
+    const assignment = tenantId ? user.tenantRoles.find((item) => item.tenantId === tenantId) :
+      user.tenantRoles.length === 1 ? user.tenantRoles[0] : undefined;
+    if (user.role !== USER_ROLE.SUPER_ADMIN && tenantId && !assignment) {
       throw new ForbiddenException('The authenticated user is not a member of the requested tenant');
     }
-    if (!tenantId && allowedTenants.length !== 1) {
+    if (!tenantId && (user.role === USER_ROLE.SUPER_ADMIN || user.tenantRoles.length !== 1)) {
       throw new UnauthorizedException('X-Tenant-Id is required when the token has multiple tenant memberships');
     }
 
-    const resolvedTenantId = tenantId ?? allowedTenants[0]!;
+    const resolvedTenantId = tenantId ?? user.tenantRoles[0]!.tenantId;
+    request.user = { id: user.id, username: user.username,
+      role: user.role === USER_ROLE.SUPER_ADMIN ? USER_ROLE.SUPER_ADMIN : assignment!.role };
     this.tenantContext.setTenantId(resolvedTenantId);
     request.tenantId = resolvedTenantId;
     return true;
+  }
+
+  async authenticate(request: Request): Promise<AuthUser> {
+    const claims = verifyBearerToken(request.headers.authorization, process.env.AUTH_JWT_SECRET);
+    verifyConfiguredIssuerAndAudience(claims);
+    if (typeof claims.sub !== 'string') throw new UnauthorizedException('Bearer token has invalid claims');
+    const user = await this.users.findById(claims.sub);
+    if (!user) throw new UnauthorizedException('Bearer token is no longer valid');
+    if (!user.active) throw new UnauthorizedException('Bearer token is no longer valid');
+    return user;
   }
 }
 
@@ -82,14 +93,6 @@ function verifyBearerToken(authorization: string | undefined, secret: string | u
     throw new UnauthorizedException('Bearer token is expired or has invalid claims');
   }
   return jwtClaims;
-}
-
-function getTenantIds(claims: TenantJwtClaims): string[] {
-  const values = claims.tenant_ids ?? (typeof claims.tenant_id === 'string' ? [claims.tenant_id] : undefined);
-  if (!Array.isArray(values) || values.length === 0 || values.some((value) => typeof value !== 'string' || !value.trim())) {
-    throw new UnauthorizedException('Bearer token has no valid tenant membership');
-  }
-  return [...new Set(values as string[])];
 }
 
 function verifyConfiguredIssuerAndAudience(claims: TenantJwtClaims): void {

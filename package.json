@@ -21,6 +21,8 @@
     "start:prod": "node dist/main.js",
     "lint": "oxlint --type-aware src/ test/",
     "test": "vitest run",
+    "test:tenant": "vitest run src/shared/infrastructure/tenant",
+    "test:tenant:cov": "vitest run --coverage --coverage.all --coverage.include=src/shared/infrastructure/tenant/**/*.ts --coverage.exclude=src/shared/infrastructure/tenant/**/*.spec.ts src/shared/infrastructure/tenant",
     "test:ledger": "vitest run src/modules/ledger",
     "test:ledger:cov": "vitest run --coverage --coverage.all --coverage.include=src/modules/ledger/**/*.ts --coverage.exclude=src/modules/ledger/**/*.spec.ts src/modules/ledger",
     "test:inventory": "vitest run src/modules/inventory test/integration/inventory-concurrency.spec.ts",
