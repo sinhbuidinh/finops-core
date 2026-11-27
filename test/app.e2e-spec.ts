@@ -13,6 +13,7 @@ import { TenantModule } from '../src/shared/infrastructure/tenant/tenant.module.
 
 const testJwtSecret = 'test-only-secret-with-more-than-32-bytes';
 const tenantToken = createTenantToken('tenant-1');
+const multiTenantToken = createTenantToken(['tenant-1', 'tenant-2']);
 
 describe('AppController (e2e)', () => {
   let app: INestApplication<App>;
@@ -108,6 +109,23 @@ describe('Orders HTTP (e2e)', () => {
       .expect(403);
   });
 
+  it('uses one token to act in each tenant listed in its signed membership claim', async () => {
+    for (const tenantId of ['tenant-1', 'tenant-2']) {
+      const response = await request(app.getHttpServer()).post('/orders')
+        .set('Authorization', `Bearer ${multiTenantToken}`).set('X-Tenant-Id', tenantId)
+        .set('Idempotency-Key', `multi-${tenantId}`)
+        .send({ inventoryItemId: 'sku-1', quantity: 1, payment: { id: `payment-${tenantId}`, lines: [] } })
+        .expect(202);
+      expect(response.body.tenantId).toBe(tenantId);
+    }
+
+    await request(app.getHttpServer()).post('/orders')
+      .set('Authorization', `Bearer ${multiTenantToken}`).set('X-Tenant-Id', 'tenant-3')
+      .set('Idempotency-Key', 'multi-tenant-3')
+      .send({ inventoryItemId: 'sku-1', quantity: 1, payment: { id: 'payment-tenant-3', lines: [] } })
+      .expect(403);
+  });
+
   it('exposes the failed state after payment failure rollback', async () => {
     const created = await request(app.getHttpServer()).post('/orders').set('Authorization', `Bearer ${tenantToken}`).set('Idempotency-Key', 'fail-1')
       .send({ inventoryItemId: 'sku-1', quantity: 1, payment: { id: 'payment-fail', lines: [] } })
@@ -119,9 +137,10 @@ describe('Orders HTTP (e2e)', () => {
   });
 });
 
-function createTenantToken(tenantId: string): string {
+function createTenantToken(tenant: string | string[]): string {
   const header = Buffer.from(JSON.stringify({ alg: 'HS256', typ: 'JWT' })).toString('base64url');
-  const payload = Buffer.from(JSON.stringify({ sub: 'e2e-user', tenant_id: tenantId, exp: Math.floor(Date.now() / 1000) + 300 })).toString('base64url');
+  const tenantClaims = Array.isArray(tenant) ? { tenant_ids: tenant } : { tenant_id: tenant };
+  const payload = Buffer.from(JSON.stringify({ sub: 'e2e-user', ...tenantClaims, exp: Math.floor(Date.now() / 1000) + 300 })).toString('base64url');
   const signature = createHmac('sha256', testJwtSecret).update(`${header}.${payload}`).digest('base64url');
   return `${header}.${payload}.${signature}`;
 }

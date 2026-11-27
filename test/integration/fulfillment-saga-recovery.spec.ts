@@ -15,10 +15,14 @@ import { PostgresLedgerEntryRepository } from '../../src/modules/ledger/infrastr
 
 if (!process.env.INVENTORY_TEST_DATABASE_URL && existsSync('.env')) process.loadEnvFile('.env');
 const connectionString = process.env.INVENTORY_TEST_DATABASE_URL;
+const testDatabaseUrl = connectionString ? new URL(connectionString) : undefined;
+// docker-compose sets DB_HOST=postgres for the API container. There, loopback
+// refers to the API container rather than PostgreSQL; use the compose service DNS.
+if (testDatabaseUrl && process.env.DB_HOST === 'postgres') testDatabaseUrl.hostname = 'postgres';
 const integration = connectionString ? describe : describe.skip;
 
 integration('fulfillment saga PostgreSQL recovery', () => {
-  const pool = new Pool({ connectionString, max: 5 });
+  const pool = new Pool({ connectionString: testDatabaseUrl?.toString(), max: 5 });
   const inventory = new InventoryService(new PostgresInventoryRepository(pool));
   const ledgerRepository = new PostgresLedgerEntryRepository(pool);
   const ledger = new LedgerService(

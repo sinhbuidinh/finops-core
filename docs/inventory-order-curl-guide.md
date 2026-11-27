@@ -20,7 +20,15 @@ SKU=sku-1
 TOKEN=<access-token-from-your-auth-provider>
 ```
 
-The token must be an HS256 JWT signed with the API's `AUTH_JWT_SECRET`, with a non-empty `sub`, a future `exp`, and either a `tenant_id` claim or a `tenant_ids` array. Configure the same secret (at least 32 bytes) in the API. If your identity provider issues a different algorithm or token format, connect its verifier instead of adapting clients to trust an unsigned tenant header. Set `AUTH_JWT_ISSUER` and `AUTH_JWT_AUDIENCE` when those claims are part of your token contract. For a user with multiple tenant memberships, send `X-Tenant-Id` to select one; the guard rejects a tenant that is not in the signed membership claims. A user with one membership can omit that header.
+The token must be an HS256 JWT signed with the API's `AUTH_JWT_SECRET`, with a non-empty `sub`, a future `exp`, and either a `tenant_id` claim or a `tenant_ids` array. Configure the same secret (at least 32 bytes) in the API. If your identity provider issues a different algorithm or token format, connect its verifier instead of adapting clients to trust an unsigned tenant header. Set `AUTH_JWT_ISSUER` and `AUTH_JWT_AUDIENCE` when those claims are part of your token contract.
+
+One token can authorize several tenants when the trusted issuer includes each membership in `tenant_ids`:
+
+```json
+{"sub":"user-123","tenant_ids":["tenant-1","tenant-2"],"exp":<future-unix-time>}
+```
+
+For multi-tenant tokens, send `X-Tenant-Id` on each request to select the active tenant. The guard rejects a tenant that is not in the signed membership claims. A token with a single `tenant_id` can omit the header.
 
 ## 2. Create inventory for the tenant
 
