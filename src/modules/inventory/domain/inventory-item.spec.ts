@@ -3,9 +3,9 @@ import { InventoryItem } from './inventory-item.js';
 
 describe('InventoryItem', () => {
   it('defaults reserved quantity and version and computes availability', () => {
-    const item = InventoryItem.create({ id: 'sku-1', totalQty: 12 });
-    expect(item).toMatchObject({ id: 'sku-1', totalQty: 12, reservedQty: 0, version: 0, availableQty: 12 });
-    expect(InventoryItem.create({ id: 'sku-2', totalQty: 9, reservedQty: 4, version: 3 }).availableQty).toBe(5);
+    const item = InventoryItem.create({ tenantId: 'tenant-1', id: 'sku-1', totalQty: 12 });
+    expect(item).toMatchObject({ tenantId: 'tenant-1', id: 'sku-1', totalQty: 12, reservedQty: 0, version: 0, availableQty: 12 });
+    expect(InventoryItem.create({ tenantId: 'tenant-1', id: 'sku-2', totalQty: 9, reservedQty: 4, version: 3 }).availableQty).toBe(5);
   });
 
   it.each([

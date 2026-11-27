@@ -36,12 +36,12 @@ integration('fulfillment saga PostgreSQL recovery', () => {
   beforeAll(async () => {
     for (const migration of [
       '001_reliability_tables.sql', '002_ledger.sql', '003_inventory.sql',
-      '004_fulfillment_saga.sql', '005_fulfillment_orders.sql', '006_idempotent_stock_reservations.sql',
+      '004_fulfillment_saga.sql', '005_fulfillment_orders.sql', '006_idempotent_stock_reservations.sql', '007_tenant_scoped_inventory.sql',
     ]) {
       await pool.query(readFileSync(join(process.cwd(), 'src/shared/infrastructure/database/migrations', migration), 'utf8'));
     }
     await pool.query(`INSERT INTO ledger_accounts (account_id, name, type) VALUES ($1, 'Saga cash', 'ASSET'), ($2, 'Saga revenue', 'REVENUE')`, [`${prefix}-cash`, `${prefix}-revenue`]);
-    await inventory.createItem({ id: `${prefix}-sku`, totalQty: 4 });
+    await inventory.createItem({ tenantId: prefix, id: `${prefix}-sku`, totalQty: 4 });
     const saga = new FulfillmentSaga([
       new ReserveInventoryStep(inventory),
       new SettleLedgerPaymentStep({
@@ -73,7 +73,7 @@ integration('fulfillment saga PostgreSQL recovery', () => {
 
   it('recovers a lost ledger response without duplicating stock or journal entries', async () => {
     const payload = {
-      sagaId, orderId, inventoryItemId: `${prefix}-sku`, quantity: 2,
+      sagaId, orderId, tenantId: prefix, inventoryItemId: `${prefix}-sku`, quantity: 2,
       payment: {
         id: entryId, description: 'Integration order payment', postedAt: new Date().toISOString(),
         lines: [
@@ -86,11 +86,11 @@ integration('fulfillment saga PostgreSQL recovery', () => {
     await pool.query(`INSERT INTO fulfillment_orders (id, tenant_id, state, saga_id, payload) VALUES ($1, $2, 'APPROVED', $3, $4)`, [orderId, prefix, sagaId, payload]);
 
     await worker.runOnce();
-    await expect(inventory.getItem(`${prefix}-sku`)).resolves.toMatchObject({ reservedQty: 0, availableQty: 4 });
+    await expect(inventory.getItem(prefix, `${prefix}-sku`)).resolves.toMatchObject({ reservedQty: 0, availableQty: 4 });
     const retry = await pool.query(`UPDATE fulfillment_saga_jobs SET available_at = now() WHERE saga_id = $1 RETURNING state`, [sagaId]);
     expect(retry.rows[0]?.state).toBe('PENDING');
     await worker.runOnce();
-    await expect(inventory.getItem(`${prefix}-sku`)).resolves.toMatchObject({ reservedQty: 2, availableQty: 2 });
+    await expect(inventory.getItem(prefix, `${prefix}-sku`)).resolves.toMatchObject({ reservedQty: 2, availableQty: 2 });
     await expect(ledgerRepository.findById(entryId)).resolves.toMatchObject({ id: entryId });
     const entryCount = await pool.query('SELECT count(*)::int AS count FROM journal_entries WHERE entry_id = $1', [entryId]);
     expect(entryCount.rows[0]?.count).toBe(1);

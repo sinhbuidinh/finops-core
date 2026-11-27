@@ -1,7 +1,7 @@
 import { ReserveInventoryStep, SettleLedgerPaymentStep, type FulfillmentContext } from './saga-steps.js';
 
 const context: FulfillmentContext = {
-  sagaId: 'saga-1', orderId: 'order-1', inventoryItemId: 'sku-1', quantity: 2,
+  sagaId: 'saga-1', orderId: 'order-1', tenantId: 'tenant-1', inventoryItemId: 'sku-1', quantity: 2,
   payment: { id: 'entry-1', description: 'Order payment', lines: [
     { accountId: 'cash', side: 'DEBIT', amount: { minorUnits: '100', currency: 'USD' } },
     { accountId: 'revenue', side: 'CREDIT', amount: { minorUnits: '100', currency: 'USD' } },
@@ -14,8 +14,8 @@ describe('fulfillment saga steps', () => {
     const step = new ReserveInventoryStep({ reserve } as never);
     await expect(step.execute(context)).rejects.toThrow('response lost');
     await expect(step.execute(context)).resolves.toBe('reservation-1');
-    expect(reserve).toHaveBeenNthCalledWith(1, 'sku-1', 2, 'fulfillment:saga-1');
-    expect(reserve).toHaveBeenNthCalledWith(2, 'sku-1', 2, 'fulfillment:saga-1');
+    expect(reserve).toHaveBeenNthCalledWith(1, 'tenant-1', 'sku-1', 2, 'fulfillment:saga-1');
+    expect(reserve).toHaveBeenNthCalledWith(2, 'tenant-1', 'sku-1', 2, 'fulfillment:saga-1');
   });
 
   it('uses a stable ledger idempotency key after a post commits but its response is lost', async () => {

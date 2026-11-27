@@ -8,8 +8,8 @@ export class InventoryService {
   constructor(@Inject(INVENTORY_REPOSITORY) repository: InventoryRepositoryPort) {
     this.useCase = new InventoryUseCase(repository);
   }
-  createItem(input: { id: string; totalQty: number }) { return this.useCase.createItem(input); }
-  getItem(id: string) { return this.useCase.getItem(id); }
-  reserve(id: string, quantity: number, idempotencyKey?: string) { return this.useCase.reserve(id, quantity, idempotencyKey); }
-  release(id: string) { return this.useCase.release(id); }
+  createItem(input: { tenantId: string; id: string; totalQty: number }) { return this.useCase.createItem(input); }
+  getItem(tenantId: string, id: string) { return this.useCase.getItem(tenantId, id); }
+  reserve(tenantId: string, id: string, quantity: number, idempotencyKey?: string) { return this.useCase.reserve(tenantId, id, quantity, idempotencyKey); }
+  release(tenantId: string, id: string) { return this.useCase.release(tenantId, id); }
 }

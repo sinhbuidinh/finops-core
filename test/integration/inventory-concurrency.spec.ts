@@ -1,5 +1,6 @@
 import { randomUUID } from 'node:crypto';
-import { existsSync } from 'node:fs';
+import { existsSync, readFileSync } from 'node:fs';
+import { join } from 'node:path';
 import { Pool } from 'pg';
 import { DomainConflictError } from '../../src/shared/domain/domain-error.js';
 import { InventoryItem } from '../../src/modules/inventory/domain/inventory-item.js';
@@ -16,50 +17,51 @@ if (testDatabaseUrl && process.env.DB_HOST === 'postgres') testDatabaseUrl.hostn
 integration('inventory PostgreSQL concurrency', () => {
   const pool = new Pool({ connectionString: testDatabaseUrl?.toString(), max: 20 });
   const repository = new PostgresInventoryRepository(pool);
+  const tenantId = `tenant-${randomUUID()}`;
+  const otherTenantId = `tenant-${randomUUID()}`;
   const itemId = `concurrency-${randomUUID()}`;
 
   beforeAll(async () => {
-    await pool.query(`
-      CREATE TABLE IF NOT EXISTS inventory_items (
-        item_id TEXT PRIMARY KEY,
-        total_qty INTEGER NOT NULL CHECK (total_qty >= 0),
-        reserved_qty INTEGER NOT NULL DEFAULT 0 CHECK (reserved_qty >= 0 AND reserved_qty <= total_qty),
-        available_qty INTEGER GENERATED ALWAYS AS (total_qty - reserved_qty) STORED,
-        version INTEGER NOT NULL DEFAULT 0 CHECK (version >= 0),
-        created_at TIMESTAMPTZ NOT NULL DEFAULT now(), updated_at TIMESTAMPTZ NOT NULL DEFAULT now()
-      );
-      CREATE TABLE IF NOT EXISTS stock_reservations (
-        reservation_id UUID PRIMARY KEY,
-        item_id TEXT NOT NULL REFERENCES inventory_items(item_id) ON DELETE RESTRICT,
-        quantity INTEGER NOT NULL CHECK (quantity > 0),
-        status TEXT NOT NULL DEFAULT 'ACTIVE' CHECK (status IN ('ACTIVE', 'RELEASED')),
-        created_at TIMESTAMPTZ NOT NULL DEFAULT now(), released_at TIMESTAMPTZ,
-        CHECK ((status = 'ACTIVE' AND released_at IS NULL) OR (status = 'RELEASED' AND released_at IS NOT NULL))
-      );`);
-    await pool.query('ALTER TABLE stock_reservations ADD COLUMN IF NOT EXISTS idempotency_key TEXT');
-    await pool.query(`CREATE UNIQUE INDEX IF NOT EXISTS stock_reservations_idempotency_key_idx
-      ON stock_reservations (idempotency_key) WHERE idempotency_key IS NOT NULL`);
-    await repository.createItem(InventoryItem.create({ id: itemId, totalQty: 7 }));
+    for (const migration of ['003_inventory.sql', '006_idempotent_stock_reservations.sql', '007_tenant_scoped_inventory.sql']) {
+      await pool.query(readFileSync(join(process.cwd(), 'src/shared/infrastructure/database/migrations', migration), 'utf8'));
+    }
+    await repository.createItem(InventoryItem.create({ tenantId, id: itemId, totalQty: 7 }));
   });
 
   afterAll(async () => {
-    await pool.query('DELETE FROM stock_reservations WHERE item_id = $1', [itemId]);
-    await pool.query('DELETE FROM inventory_items WHERE item_id = $1', [itemId]);
+    await pool.query('DELETE FROM stock_reservations WHERE tenant_id = $1 AND item_id = $2', [tenantId, itemId]);
+    await pool.query('DELETE FROM inventory_items WHERE tenant_id = $1 AND item_id = $2', [tenantId, itemId]);
     await pool.end();
   });
 
   it('does not oversell when simultaneous reservations compete for the last units', async () => {
-    const outcomes = await Promise.allSettled(Array.from({ length: 24 }, () => repository.reserve(itemId, 1)));
+    const outcomes = await Promise.allSettled(Array.from({ length: 24 }, () => repository.reserve(tenantId, itemId, 1)));
     const successes = outcomes.filter((result) => result.status === 'fulfilled');
     const conflicts = outcomes.filter((result) => result.status === 'rejected' && result.reason instanceof DomainConflictError);
 
     expect(successes).toHaveLength(7);
     expect(conflicts).toHaveLength(17);
-    const item = await repository.findItem(itemId);
+    const item = await repository.findItem(tenantId, itemId);
     expect(item).toMatchObject({ totalQty: 7, reservedQty: 7, availableQty: 0 });
 
     const reservationIds = successes.map((result) => result.status === 'fulfilled' ? result.value.id : '');
-    await Promise.all(reservationIds.map((id) => repository.release(id)));
-    expect(await repository.findItem(itemId)).toMatchObject({ totalQty: 7, reservedQty: 0, availableQty: 7 });
+    await Promise.all(reservationIds.map((id) => repository.release(tenantId, id)));
+    expect(await repository.findItem(tenantId, itemId)).toMatchObject({ totalQty: 7, reservedQty: 0, availableQty: 7 });
+  });
+
+  it('isolates matching SKU IDs and reservations between tenants', async () => {
+    const sharedSku = `shared-${randomUUID()}`;
+    await repository.createItem(InventoryItem.create({ tenantId, id: sharedSku, totalQty: 3 }));
+    await repository.createItem(InventoryItem.create({ tenantId: otherTenantId, id: sharedSku, totalQty: 8 }));
+
+    const reservation = await repository.reserve(tenantId, sharedSku, 2, 'same-key');
+    expect(await repository.findItem(tenantId, sharedSku)).toMatchObject({ reservedQty: 2, availableQty: 1 });
+    expect(await repository.findItem(otherTenantId, sharedSku)).toMatchObject({ reservedQty: 0, availableQty: 8 });
+    await expect(repository.reserve(otherTenantId, 'missing-for-this-tenant', 1)).rejects.toThrow('Inventory item not found');
+
+    await repository.release(tenantId, reservation.id);
+    await pool.query('DELETE FROM stock_reservations WHERE tenant_id = $1 AND reservation_id = $2', [tenantId, reservation.id]);
+    await pool.query('DELETE FROM inventory_items WHERE tenant_id = $1 AND item_id = $2', [tenantId, sharedSku]);
+    await pool.query('DELETE FROM inventory_items WHERE tenant_id = $1 AND item_id = $2', [otherTenantId, sharedSku]);
   });
 });

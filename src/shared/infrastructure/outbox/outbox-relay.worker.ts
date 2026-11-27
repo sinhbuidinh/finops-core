@@ -13,7 +13,9 @@ import {
 } from './outbox-repository.js';
 
 const RETRY_POLICY: OutboxRetryPolicy = {
-  maxAttempts: Number(process.env.OUTBOX_MAX_ATTEMPTS ?? 8),
+  // The first delivery is attempt one; after three total attempts the event is
+  // moved to DEAD_LETTER. Override with OUTBOX_MAX_ATTEMPTS when needed.
+  maxAttempts: Number(process.env.OUTBOX_MAX_ATTEMPTS ?? 3),
   baseDelayMs: Number(process.env.OUTBOX_RETRY_BASE_MS ?? 1000),
   maxDelayMs: Number(process.env.OUTBOX_RETRY_MAX_MS ?? 300_000),
 };

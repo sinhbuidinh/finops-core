@@ -7,6 +7,7 @@ import type { SagaStep } from './saga-step.js';
 export interface FulfillmentContext {
   readonly sagaId: string;
   readonly orderId: string;
+  readonly tenantId: string;
   readonly inventoryItemId: string;
   readonly quantity: number;
   readonly payment: {
@@ -24,7 +25,7 @@ export class ReserveInventoryStep implements SagaStep<FulfillmentContext, string
   readonly name = 'reserve-inventory';
   constructor(private readonly inventory: InventoryService) {}
   async execute(context: FulfillmentContext): Promise<string> {
-    const reservation = await this.inventory.reserve(context.inventoryItemId, context.quantity, `fulfillment:${context.sagaId}`);
+    const reservation = await this.inventory.reserve(context.tenantId, context.inventoryItemId, context.quantity, `fulfillment:${context.sagaId}`);
     context.reservationId = reservation.id;
     return reservation.id;
   }
@@ -58,7 +59,7 @@ export class ReleaseInventoryStep implements SagaStep<FulfillmentContext, string
   constructor(private readonly inventory: InventoryService) {}
   async execute(context: FulfillmentContext): Promise<string> {
     if (!context.reservationId) throw new Error('Inventory reservation is missing');
-    await this.inventory.release(context.reservationId);
+    await this.inventory.release(context.tenantId, context.reservationId);
     return context.reservationId;
   }
   async compensate(): Promise<void> {}

@@ -59,7 +59,7 @@ describe('OutboxRelayWorker', () => {
       event,
       event.claimToken,
       deliveryError,
-      expect.objectContaining({ maxAttempts: 8, baseDelayMs: 1000 }),
+      expect.objectContaining({ maxAttempts: 3, baseDelayMs: 1000 }),
     );
     expect(repository.markPublished).not.toHaveBeenCalled();
     warn.mockRestore();

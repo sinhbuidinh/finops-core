@@ -6,18 +6,18 @@ export class InventoryController {
   constructor(private readonly inventory: InventoryService) {}
 
   @Post('items')
-  createItem(@Body() body: { id: string; totalQty: number }) {
+  createItem(@Body() body: { tenantId: string; id: string; totalQty: number }) {
     return this.inventory.createItem(body);
   }
 
-  @Get('items/:id')
-  getItem(@Param('id') id: string) { return this.inventory.getItem(id); }
+  @Get('tenants/:tenantId/items/:id')
+  getItem(@Param('tenantId') tenantId: string, @Param('id') id: string) { return this.inventory.getItem(tenantId, id); }
 
-  @Post('items/:id/reservations')
-  reserve(@Param('id') id: string, @Body('quantity', ParseIntPipe) quantity: number) {
-    return this.inventory.reserve(id, quantity);
+  @Post('tenants/:tenantId/items/:id/reservations')
+  reserve(@Param('tenantId') tenantId: string, @Param('id') id: string, @Body('quantity', ParseIntPipe) quantity: number) {
+    return this.inventory.reserve(tenantId, id, quantity);
   }
 
-  @Post('reservations/:id/release')
-  release(@Param('id') id: string) { return this.inventory.release(id); }
+  @Post('tenants/:tenantId/reservations/:id/release')
+  release(@Param('tenantId') tenantId: string, @Param('id') id: string) { return this.inventory.release(tenantId, id); }
 }

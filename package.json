@@ -13,6 +13,7 @@
     "prepare": "husky",
     "build": "nest build",
     "deploy": "nest deploy",
+    "db:migrate": "node --env-file-if-exists=.env scripts/migrate.mjs",
     "format": "prettier --write \"src/**/*.ts\" \"test/**/*.ts\"",
     "start": "nest start --env-file .env",
     "start:dev": "nest start --watch --env-file .env",
