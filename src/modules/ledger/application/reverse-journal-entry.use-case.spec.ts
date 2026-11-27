@@ -26,14 +26,16 @@ function repository(overrides: Partial<LedgerEntryRepositoryPort> = {}): LedgerE
 
 describe('ReverseJournalEntryUseCase', () => {
   it('appends a reversal and leaves the original entry unchanged', async () => {
-    const entries = repository();
+    const save = vi.fn();
+    const saveReversal = vi.fn(async (_originalId, reversal) => reversal);
+    const entries = repository({ save, saveReversal });
     const useCase = new ReverseJournalEntryUseCase(entries);
     const before = original.lines.map(({ side, amount }) => [side, amount.toJSON()]);
     const reversal = await useCase.execute({ originalEntryId: original.id, reversalEntryId: 'entry-2' });
 
     expect(reversal.reversalOfEntryId).toBe(original.id);
-    expect(entries.saveReversal).toHaveBeenCalledWith(original.id, reversal, undefined);
-    expect(entries.save).not.toHaveBeenCalled();
+    expect(saveReversal).toHaveBeenCalledWith(original.id, reversal, undefined);
+    expect(save).not.toHaveBeenCalled();
     expect(original.lines.map(({ side, amount }) => [side, amount.toJSON()])).toEqual(before);
   });
 
@@ -51,25 +53,28 @@ describe('ReverseJournalEntryUseCase', () => {
 
   it('returns an idempotent replay before checking the original entry', async () => {
     const replay = JournalEntry.reversalOf('entry-replay', original);
-    const entries = repository({ findIdempotentResult: vi.fn().mockResolvedValue(replay) });
+    const findById = vi.fn();
+    const entries = repository({ findIdempotentResult: vi.fn().mockResolvedValue(replay), findById });
     const result = await new ReverseJournalEntryUseCase(entries).execute({
       originalEntryId: original.id,
       reversalEntryId: replay.id,
       idempotency: { scope: 'ledger:reverse', key: 'key', fingerprint: 'fingerprint' },
     });
     expect(result).toBe(replay);
-    expect(entries.findById).not.toHaveBeenCalled();
+    expect(findById).not.toHaveBeenCalled();
   });
 
   it('creates a reversal when no completed idempotency result exists', async () => {
-    const entries = repository();
+    const findIdempotentResult = vi.fn().mockResolvedValue(null);
+    const saveReversal = vi.fn(async (_originalId, reversal) => reversal);
+    const entries = repository({ findIdempotentResult, saveReversal });
     const result = await new ReverseJournalEntryUseCase(entries).execute({
       originalEntryId: original.id,
       reversalEntryId: 'entry-with-idempotency',
       idempotency: { scope: 'ledger:reverse', key: 'key', fingerprint: 'fingerprint' },
     });
-    expect(entries.findIdempotentResult).toHaveBeenCalledOnce();
-    expect(entries.saveReversal).toHaveBeenCalledWith(original.id, result, {
+    expect(findIdempotentResult).toHaveBeenCalledOnce();
+    expect(saveReversal).toHaveBeenCalledWith(original.id, result, {
       scope: 'ledger:reverse', key: 'key', fingerprint: 'fingerprint',
     });
   });

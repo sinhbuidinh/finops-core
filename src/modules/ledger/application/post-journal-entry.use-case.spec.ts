@@ -5,8 +5,9 @@ import { PostJournalEntryUseCase } from './post-journal-entry.use-case.js';
 
 describe('PostJournalEntryUseCase', () => {
   it('validates and persists the new journal entry', async () => {
+    const save = vi.fn(async (entry) => entry);
     const entries: LedgerEntryRepositoryPort = {
-      save: vi.fn(async (entry) => entry),
+      save,
       findById: vi.fn(),
       findReversalOf: vi.fn(),
       findIdempotentResult: vi.fn(),
@@ -22,7 +23,7 @@ describe('PostJournalEntryUseCase', () => {
       ],
     });
 
-    expect(entries.save).toHaveBeenCalledWith(result, undefined);
+    expect(save).toHaveBeenCalledWith(result, undefined);
     expect(result.id).toBe('entry-1');
   });
 });

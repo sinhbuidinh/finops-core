@@ -65,8 +65,9 @@ describe('PostgresInventoryRepository', () => {
       return { rowCount: 1, rows: [] };
     });
 
-    await expect(repository.reserve('tenant-1', 'sku', 2, 'saga-1'))
-      .rejects.toMatchObject({ code: 'RESERVATION_IDEMPOTENCY_KEY_REUSED' });
+    const outcome = repository.reserve('tenant-1', 'sku', 2, 'saga-1');
+    await expect(outcome).rejects.toBeInstanceOf(DomainConflictError);
+    await expect(outcome).rejects.toMatchObject({ code: 'RESERVATION_IDEMPOTENCY_KEY_REUSED' });
     expect(clientQuery).toHaveBeenCalledWith('ROLLBACK');
     expect(releaseClient).toHaveBeenCalledOnce();
   });

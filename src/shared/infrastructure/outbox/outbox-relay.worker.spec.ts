@@ -106,7 +106,8 @@ describe('OutboxRelayWorker', () => {
   });
 
   it('starts an immediate poll and clears its timer on shutdown', () => {
-    const interval = { unref: vi.fn() } as unknown as NodeJS.Timeout;
+    const unref = vi.fn();
+    const interval = { unref } as unknown as NodeJS.Timeout;
     const setIntervalSpy = vi.spyOn(globalThis, 'setInterval').mockReturnValue(interval);
     const clearIntervalSpy = vi.spyOn(globalThis, 'clearInterval').mockImplementation(() => undefined);
     const worker = new OutboxRelayWorker(repository as unknown as OutboxRepository, eventBus as unknown as OutboxEventBus);
@@ -114,7 +115,7 @@ describe('OutboxRelayWorker', () => {
 
     worker.onModuleInit();
     expect(setIntervalSpy).toHaveBeenCalledOnce();
-    expect(interval.unref).toHaveBeenCalledOnce();
+    expect(unref).toHaveBeenCalledOnce();
     expect(run).toHaveBeenCalledOnce();
     setIntervalSpy.mock.calls[0]![0]();
     expect(run).toHaveBeenCalledTimes(2);

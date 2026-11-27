@@ -75,13 +75,14 @@ describe('PostgresLedgerEntryRepository', () => {
       if (sql.includes('INSERT INTO journal_entry_lines')) throw new Error('database unavailable');
       return { rowCount: 1, rows: [] };
     });
-    const client = { query, release: vi.fn() } as unknown as PoolClient;
+    const release = vi.fn();
+    const client = { query, release } as unknown as PoolClient;
     const pool = { connect: vi.fn().mockResolvedValue(client) } as unknown as Pool;
     const repository = new PostgresLedgerEntryRepository(pool);
 
     await expect(repository.save(makeEntry())).rejects.toThrow('database unavailable');
     expect(query.mock.calls.at(-1)?.[0]).toBe('ROLLBACK');
-    expect(client.release).toHaveBeenCalledOnce();
+    expect(release).toHaveBeenCalledOnce();
   });
 
   it('preserves the original error when rollback also fails', async () => {

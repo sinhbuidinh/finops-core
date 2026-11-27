@@ -23,6 +23,6 @@ export class OutboxEventBus {
     if (!handlers?.size) {
       throw new Error(`No outbox handler registered for ${message.eventName}`);
     }
-    await Promise.all([...handlers].map((handler) => handler(message)));
+    await Promise.all([...handlers].map((handler) => Promise.resolve(handler(message))));
   }
 }

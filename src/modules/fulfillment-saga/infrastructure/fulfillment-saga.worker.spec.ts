@@ -136,7 +136,8 @@ describe('FulfillmentSagaWorker', () => {
     await worker.runOnce();
     expect(poolQuery).toHaveBeenCalledWith(expect.stringContaining('UPDATE fulfillment_orders'), expect.any(Array));
 
-    const timer = { unref: vi.fn() } as unknown as NodeJS.Timeout;
+    const unref = vi.fn();
+    const timer = { unref } as unknown as NodeJS.Timeout;
     const setInterval = vi.spyOn(globalThis, 'setInterval').mockReturnValue(timer);
     const clearInterval = vi.spyOn(globalThis, 'clearInterval').mockImplementation(() => undefined);
     const idleWorker = new FulfillmentSagaWorker({} as never, {} as never);
@@ -144,7 +145,7 @@ describe('FulfillmentSagaWorker', () => {
     idleWorker.onModuleInit();
     idleWorker.onModuleDestroy();
     expect(setInterval).toHaveBeenCalledOnce();
-    expect(timer.unref).toHaveBeenCalledOnce();
+    expect(unref).toHaveBeenCalledOnce();
     expect(clearInterval).toHaveBeenCalledWith(timer);
     setInterval.mockRestore();
     clearInterval.mockRestore();

@@ -57,7 +57,7 @@ export class JournalEntry {
     for (const line of input.lines) {
       if (!line.accountId.trim()) throw new DomainValidationError('Journal line account id is required', 'INVALID_JOURNAL_LINE');
       if (line.side !== JOURNAL_SIDES.DEBIT && line.side !== JOURNAL_SIDES.CREDIT) {
-        throw new DomainValidationError(`Invalid journal side: ${line.side}`, 'INVALID_JOURNAL_SIDE');
+        throw new DomainValidationError(`Invalid journal side: ${String(line.side)}`, 'INVALID_JOURNAL_SIDE');
       }
       if (line.amount.minorUnits <= 0n) {
         throw new DomainValidationError('Journal line amounts must be positive', 'INVALID_JOURNAL_AMOUNT');
