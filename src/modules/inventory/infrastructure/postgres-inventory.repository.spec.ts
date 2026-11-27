@@ -57,6 +57,20 @@ describe('PostgresInventoryRepository', () => {
     expect(clientQuery).toHaveBeenCalledWith('COMMIT');
   });
 
+  it('rejects reuse of a reservation key with different inventory details', async () => {
+    clientQuery.mockImplementation(async (sql: string) => {
+      if (sql.includes('FROM stock_reservations')) {
+        return { rows: [{ reservation_id: 'r1', tenant_id: 'tenant-1', item_id: 'other-sku', quantity: 2, status: 'ACTIVE' }] };
+      }
+      return { rowCount: 1, rows: [] };
+    });
+
+    await expect(repository.reserve('tenant-1', 'sku', 2, 'saga-1'))
+      .rejects.toMatchObject({ code: 'RESERVATION_IDEMPOTENCY_KEY_REUSED' });
+    expect(clientQuery).toHaveBeenCalledWith('ROLLBACK');
+    expect(releaseClient).toHaveBeenCalledOnce();
+  });
+
   it('reactivates a compensated saga reservation so a retry can reserve stock again', async () => {
     clientQuery.mockImplementation(async (sql: string) => {
       if (sql.includes('FROM stock_reservations')) return { rows: [{ reservation_id: 'r1', tenant_id: 'tenant-1', item_id: 'sku', quantity: 2, status: 'RELEASED' }] };
@@ -66,6 +80,21 @@ describe('PostgresInventoryRepository', () => {
     await expect(repository.reserve('tenant-1', 'sku', 2, 'saga-1')).resolves.toMatchObject({ id: 'r1', tenantId: 'tenant-1', status: 'ACTIVE' });
     expect(clientQuery).toHaveBeenCalledWith(expect.stringContaining("SET status = 'ACTIVE'"), ['r1', 'tenant-1']);
     expect(clientQuery).toHaveBeenCalledWith('COMMIT');
+  });
+
+  it('rejects reactivation when the released quantity no longer fits available stock', async () => {
+    clientQuery.mockImplementation(async (sql: string) => {
+      if (sql.includes('FROM stock_reservations')) {
+        return { rows: [{ reservation_id: 'r1', tenant_id: 'tenant-1', item_id: 'sku', quantity: 2, status: 'RELEASED' }] };
+      }
+      if (sql.includes('UPDATE inventory_items')) return { rowCount: 0, rows: [] };
+      return { rowCount: 1, rows: [] };
+    });
+
+    await expect(repository.reserve('tenant-1', 'sku', 2, 'saga-1'))
+      .rejects.toMatchObject({ code: 'INSUFFICIENT_INVENTORY' });
+    expect(clientQuery).toHaveBeenCalledWith('ROLLBACK');
+    expect(releaseClient).toHaveBeenCalledOnce();
   });
 
   it('rejects invalid reservations before connecting', async () => {

@@ -40,7 +40,8 @@ describe('TenantAuthGuard', () => {
     const missing = makeRequest(undefined);
     expect(() => context.run(() => guard.canActivate(makeExecutionContext(missing)))).toThrow(UnauthorizedException);
 
-    const invalid = makeRequest(`${token({ sub: 'user-1', tenant_id: 'tenant-1' }).slice(0, -1)}x`);
+    const validToken = token({ sub: 'user-1', tenant_id: 'tenant-1' });
+    const invalid = makeRequest(`${validToken.slice(0, validToken.lastIndexOf('.') + 1)}${Buffer.alloc(32).toString('base64url')}`);
     expect(() => context.run(() => guard.canActivate(makeExecutionContext(invalid)))).toThrow(UnauthorizedException);
 
     const expired = makeRequest(token({ sub: 'user-1', tenant_id: 'tenant-1', exp: 1 }));
@@ -55,9 +56,54 @@ describe('TenantAuthGuard', () => {
     expect(() => context.run(() => guard.canActivate(makeExecutionContext(request)))).toThrow(UnauthorizedException);
   });
 
-  function token(claims: Record<string, unknown>): string {
-    const header = Buffer.from(JSON.stringify({ alg: 'HS256', typ: 'JWT' })).toString('base64url');
+  it('rejects empty tenant selectors, malformed JWT headers, and missing memberships', () => {
+    const emptySelector = makeRequest(token({ sub: 'user-1', tenant_id: 'tenant-1' }));
+    emptySelector.headers['x-tenant-id'] = '   ';
+    expect(() => context.run(() => guard.canActivate(makeExecutionContext(emptySelector)))).toThrow(UnauthorizedException);
+
+    const unsupportedAlgorithm = makeRequest(token({ sub: 'user-1', tenant_id: 'tenant-1' }, { alg: 'none' }));
+    expect(() => context.run(() => guard.canActivate(makeExecutionContext(unsupportedAlgorithm)))).toThrow(UnauthorizedException);
+
+    const noMembership = makeRequest(token({ sub: 'user-1', tenant_ids: [] }));
+    expect(() => context.run(() => guard.canActivate(makeExecutionContext(noMembership)))).toThrow(UnauthorizedException);
+
+    const malformedJson = makeRequest(malformedToken());
+    expect(() => context.run(() => guard.canActivate(makeExecutionContext(malformedJson)))).toThrow(UnauthorizedException);
+  });
+
+  it('requires a sufficiently long signing secret', () => {
+    vi.stubEnv('AUTH_JWT_SECRET', 'too-short');
+    const request = makeRequest(token({ sub: 'user-1', tenant_id: 'tenant-1' }));
+    expect(() => context.run(() => guard.canActivate(makeExecutionContext(request))))
+      .toThrow('AUTH_JWT_SECRET must be configured with at least 32 bytes');
+  });
+
+  it('enforces configured issuer and audience claims', () => {
+    vi.stubEnv('AUTH_JWT_ISSUER', 'https://issuer.example');
+    vi.stubEnv('AUTH_JWT_AUDIENCE', 'finops-api');
+
+    const valid = makeRequest(token({
+      sub: 'user-1', tenant_id: 'tenant-1', iss: 'https://issuer.example', aud: ['finops-api'],
+    }));
+    expect(context.run(() => guard.canActivate(makeExecutionContext(valid)))).toBe(true);
+
+    const wrongIssuer = makeRequest(token({ sub: 'user-1', tenant_id: 'tenant-1', iss: 'https://wrong.example', aud: 'finops-api' }));
+    expect(() => context.run(() => guard.canActivate(makeExecutionContext(wrongIssuer)))).toThrow(UnauthorizedException);
+
+    const wrongAudience = makeRequest(token({ sub: 'user-1', tenant_id: 'tenant-1', iss: 'https://issuer.example', aud: 'other-api' }));
+    expect(() => context.run(() => guard.canActivate(makeExecutionContext(wrongAudience)))).toThrow(UnauthorizedException);
+  });
+
+  function token(claims: Record<string, unknown>, headerClaims: Record<string, unknown> = { alg: 'HS256', typ: 'JWT' }): string {
+    const header = Buffer.from(JSON.stringify(headerClaims)).toString('base64url');
     const payload = Buffer.from(JSON.stringify({ exp: Math.floor(Date.now() / 1000) + 300, ...claims })).toString('base64url');
+    const signature = createHmac('sha256', secret).update(`${header}.${payload}`).digest('base64url');
+    return `${header}.${payload}.${signature}`;
+  }
+
+  function malformedToken(): string {
+    const header = Buffer.from('{').toString('base64url');
+    const payload = Buffer.from(JSON.stringify({ sub: 'user-1', tenant_id: 'tenant-1', exp: Math.floor(Date.now() / 1000) + 300 })).toString('base64url');
     const signature = createHmac('sha256', secret).update(`${header}.${payload}`).digest('base64url');
     return `${header}.${payload}.${signature}`;
   }
