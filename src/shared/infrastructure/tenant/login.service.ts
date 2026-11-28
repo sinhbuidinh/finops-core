@@ -11,8 +11,11 @@ export class LoginService {
   async login(username: string, password: string): Promise<{ accessToken: string; tokenType: 'Bearer'; expiresIn: number }> {
     const secret = process.env.AUTH_JWT_SECRET;
     const expiresIn = Number(process.env.AUTH_JWT_EXPIRES_IN);
-    if (!secret || Buffer.byteLength(secret) < 32 || !Number.isSafeInteger(expiresIn) || expiresIn <= 0) {
-      throw new ServiceUnavailableException('Login is not configured');
+    if (!secret || Buffer.byteLength(secret) < 32) {
+      throw new ServiceUnavailableException('Login secret is not configured');
+    }
+    if (!Number.isSafeInteger(expiresIn) || expiresIn <= 0) {
+      throw new ServiceUnavailableException('Login expiration is not configured');
     }
     const user = await this.users.findByUsername(username);
     const valid = await verifyPassword(password, user?.passwordHash);

@@ -55,8 +55,11 @@ function validateUserInput(input: { username: string; password: string; tenants:
   }
   const tenantIds = new Set<string>();
   for (const assignment of input.tenants) {
-    if (!assignment || typeof assignment.tenantId !== 'string' || !assignment.tenantId.trim() || !isTenantRole(assignment.role)) {
-      throw new UnprocessableEntityException(`Each tenant assignment needs tenantId and one of: ${TENANT_ROLES.join(', ')}`);
+    if (!assignment || typeof assignment.tenantId !== 'string' || !assignment.tenantId.trim()) {
+      throw new UnprocessableEntityException(`Each tenant assignment needs tenantId`);
+    }
+    if (!isTenantRole(assignment.role)) {
+      throw new UnprocessableEntityException(`Request tenant role(${assignment.role ? assignment.role : 'undefined'}) is invalid`);
     }
     if (tenantIds.has(assignment.tenantId.trim())) throw new UnprocessableEntityException('Each tenant can be assigned only once per user');
     tenantIds.add(assignment.tenantId.trim());

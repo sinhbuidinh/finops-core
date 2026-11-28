@@ -1,4 +1,4 @@
-import { UnauthorizedException } from '@nestjs/common';
+import { ServiceUnavailableException, UnauthorizedException } from '@nestjs/common';
 import { createHmac } from 'node:crypto';
 import { LoginService } from './login.service.js';
 import { hashPassword } from './password-hasher.js';
@@ -10,6 +10,7 @@ describe('LoginService', () => {
   const service = new LoginService(users as never);
 
   beforeEach(async () => {
+    users.findByUsername.mockClear();
     vi.stubEnv('AUTH_JWT_SECRET', 'test-secret-that-is-longer-than-thirty-two-bytes');
     vi.stubEnv('AUTH_JWT_EXPIRES_IN', '3600');
     vi.stubEnv('AUTH_JWT_ISSUER', 'https://issuer.test');
@@ -62,11 +63,36 @@ describe('LoginService', () => {
     expect(claims.exp - claims.iat).toBe(900);
   });
 
-  it('fails closed when AUTH_JWT_EXPIRES_IN is missing or invalid', async () => {
+  it('omits optional issuer and audience claims when they are not configured', async () => {
+    delete process.env.AUTH_JWT_ISSUER;
+    delete process.env.AUTH_JWT_AUDIENCE;
+    const { accessToken } = await service.login('operator@example.com', 'correct horse battery staple');
+    const claims = JSON.parse(Buffer.from(accessToken.split('.')[1]!, 'base64url').toString());
+    expect(claims).not.toHaveProperty('iss');
+    expect(claims).not.toHaveProperty('aud');
+  });
+
+  it('fails closed with a specific error when the JWT secret is missing or too short', async () => {
+    vi.stubEnv('AUTH_JWT_SECRET', 'short');
+    await expect(service.login('operator@example.com', 'correct horse battery staple'))
+      .rejects.toThrow(new ServiceUnavailableException('Login secret is not configured'));
+    vi.stubEnv('AUTH_JWT_SECRET', '');
+    await expect(service.login('operator@example.com', 'correct horse battery staple'))
+      .rejects.toThrow('Login secret is not configured');
+    expect(users.findByUsername).not.toHaveBeenCalled();
+  });
+
+  it('fails closed with a specific error when AUTH_JWT_EXPIRES_IN is missing or invalid', async () => {
+    vi.stubEnv('AUTH_JWT_EXPIRES_IN', '');
+    await expect(service.login('operator@example.com', 'correct horse battery staple'))
+      .rejects.toThrow('Login expiration is not configured');
     vi.stubEnv('AUTH_JWT_EXPIRES_IN', '0');
-    await expect(service.login('operator@example.com', 'correct horse battery staple')).rejects.toThrow('Login is not configured');
+    await expect(service.login('operator@example.com', 'correct horse battery staple'))
+      .rejects.toThrow('Login expiration is not configured');
     vi.stubEnv('AUTH_JWT_EXPIRES_IN', 'not-a-number');
-    await expect(service.login('operator@example.com', 'correct horse battery staple')).rejects.toThrow('Login is not configured');
+    await expect(service.login('operator@example.com', 'correct horse battery staple'))
+      .rejects.toThrow('Login expiration is not configured');
+    expect(users.findByUsername).not.toHaveBeenCalled();
   });
 
   it('rejects unknown, inactive, and wrong-password accounts', async () => {
