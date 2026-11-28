@@ -1,5 +1,6 @@
 import {
   BadRequestException,
+  NotFoundException,
   Body,
   Controller,
   Get,
@@ -7,22 +8,44 @@ import {
   Param,
   Post,
   Query,
+  UseGuards,
+  HttpCode,
+  HttpStatus,
 } from '@nestjs/common';
+import { CurrentTenantId } from '../../shared/infrastructure/tenant/current-tenant.decorator.js';
+import { TenantAuthGuard } from '../../shared/infrastructure/tenant/tenant-auth.guard.js';
 import { Money } from '../../shared/domain/money.js';
 import { JOURNAL_SIDES, type JournalEntryInput, type JournalLine } from './domain/journal-entry.js';
 import { LedgerService } from './ledger.service.js';
 
 @Controller('ledger')
+@UseGuards(TenantAuthGuard)
 export class LedgerController {
   constructor(private readonly ledger: LedgerService) {}
 
   @Post('entries')
-  postEntry(@Body() body: unknown, @Headers('idempotency-key') key?: string) {
-    return this.ledger.post(parseEntry(body), requireIdempotencyKey(key));
+  postEntry(@CurrentTenantId() tenantId: string, @Body() body: unknown, @Headers('idempotency-key') key?: string) {
+    return this.ledger.post(parseEntry(body), requireIdempotencyKey(key), tenantId);
+  }
+
+  @Post('wallets')
+  @HttpCode(HttpStatus.CREATED)
+  createWallet(@CurrentTenantId() tenantId: string, @Body() body: unknown) {
+    const input = asRecord(body);
+    if (typeof input.walletId !== 'string' || !input.walletId.trim() || typeof input.name !== 'string' || !input.name.trim()) throw new BadRequestException('walletId and name are required');
+    return this.ledger.createWallet(tenantId, input.walletId.trim(), input.name.trim());
+  }
+
+  @Get('wallets/:walletId/balance')
+  async getWalletBalance(@CurrentTenantId() tenantId: string, @Param('walletId') walletId: string) {
+    const wallet = await this.ledger.findWallet(walletId, tenantId);
+    if (!wallet) throw new NotFoundException('Wallet not found');
+    return this.ledger.getBalance(wallet.ledgerAccountId, tenantId);
   }
 
   @Post('entries/:entryId/reversals')
   reverseEntry(
+    @CurrentTenantId() tenantId: string,
     @Param('entryId') entryId: string,
     @Body() body: unknown,
     @Headers('idempotency-key') key?: string,
@@ -31,17 +54,17 @@ export class LedgerController {
     if (typeof parsed.reversalEntryId !== 'string' || !parsed.reversalEntryId.trim()) {
       throw new BadRequestException('reversalEntryId is required');
     }
-    return this.ledger.reverse(entryId, parsed.reversalEntryId, requireIdempotencyKey(key));
+    return this.ledger.reverse(entryId, parsed.reversalEntryId, requireIdempotencyKey(key), tenantId);
   }
 
   @Get('accounts/:accountId/balance')
-  getBalance(@Param('accountId') accountId: string) {
-    return this.ledger.getBalance(accountId);
+  getBalance(@CurrentTenantId() tenantId: string, @Param('accountId') accountId: string) {
+    return this.ledger.getBalance(accountId, tenantId);
   }
 
   @Get('entries')
-  getHistory(@Query('cursor') cursor?: string, @Query('limit') limit?: string) {
-    return this.ledger.getHistory(cursor, limit);
+  getHistory(@CurrentTenantId() tenantId: string, @Query('cursor') cursor?: string, @Query('limit') limit?: string) {
+    return this.ledger.getHistory(cursor, limit, tenantId);
   }
 }
 

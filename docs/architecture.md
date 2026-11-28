@@ -161,6 +161,47 @@ src/
 
 * **End-to-End Tests (test/e2e/):** Exercise HTTP endpoints across full business flows (quota check -> approval -> saga -> ledger -> outbox), including failure/compensation paths.
 
+### 6.1 Running Tests with Docker Compose
+
+Run commands from the repository root. The Compose `api` service contains Node.js, dependencies, and the project files; PostgreSQL is reachable from it as `postgres` (not `localhost` or `127.0.0.1`). Start the dependencies and API first:
+
+```sh
+docker compose up -d postgres redis api
+docker compose ps
+```
+
+Run the full unit and integration test suite in the API container:
+
+```sh
+docker compose exec -T api npm test
+```
+
+Run focused suites using the package scripts:
+
+```sh
+docker compose exec -T api npm run test:ledger
+docker compose exec -T api npm run test:inventory
+docker compose exec -T api npm run test:fulfillment-saga
+```
+
+PostgreSQL-backed integration tests and the order flow e2e test are skipped unless `INVENTORY_TEST_DATABASE_URL` is set. When running inside Compose, set it to the test database using the `postgres` service hostname, credentials matching `DB_USER` and `DB_PASSWORD` in `.env`, and the test database name configured there (for example, `postgresql://<DB_USER>:<DB_PASSWORD>@postgres:5432/<TEST_DATABASE>`). Ensure that database exists before testing. Do not use the host-side `127.0.0.1` URL from `.env` inside the container. Supply the container URL for a test run without changing `.env`:
+
+```sh
+docker compose exec -T \
+  -e INVENTORY_TEST_DATABASE_URL='postgresql://<DB_USER>:<DB_PASSWORD>@postgres:5432/<TEST_DATABASE>' \
+  api npm run test:e2e
+```
+
+Replace the placeholders with the local `.env` values. The e2e test creates a unique temporary schema, applies the SQL migrations there, exercises the HTTP order flow and saga worker, then drops the schema. It does not use or clear the application's normal database tables. To run only that test file:
+
+```sh
+docker compose exec -T \
+  -e INVENTORY_TEST_DATABASE_URL='postgresql://<DB_USER>:<DB_PASSWORD>@postgres:5432/<TEST_DATABASE>' \
+  api npx vitest run --config ./vitest.config.e2e.ts test/order-funds-inventory.e2e-spec.ts
+```
+
+Vitest output reports skipped database suites when the test URL is missing. Check service readiness with `docker compose ps` and API/database logs with `docker compose logs api postgres` if a test cannot connect. The `api` service bind-mounts the working tree, so edits on the host are visible in the container; restart or rebuild it after changing dependencies or the Docker image.
+
 ## 7. Architecture Decision Records (ADRs)
 Maintain concise decision logs under docs/adr/:
 

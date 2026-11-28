@@ -2,12 +2,12 @@ import type { JournalEntry } from '../domain/journal-entry.js';
 
 /** Persistence boundary; implementations must commit each operation atomically. */
 export interface LedgerEntryRepositoryPort {
-  save(entry: JournalEntry, idempotency?: LedgerIdempotencyContext): Promise<JournalEntry>;
-  findById(id: string): Promise<JournalEntry | null>;
-  findReversalOf(originalEntryId: string): Promise<JournalEntry | null>;
+  save(entry: JournalEntry, idempotency?: LedgerIdempotencyContext, tenantId?: string): Promise<JournalEntry>;
+  findById(id: string, tenantId?: string): Promise<JournalEntry | null>;
+  findReversalOf(originalEntryId: string, tenantId?: string): Promise<JournalEntry | null>;
   findIdempotentResult(context: LedgerIdempotencyContext): Promise<JournalEntry | null>;
   /** Must enforce one reversal per original atomically (for example, a unique constraint). */
-  saveReversal(originalEntryId: string, reversal: JournalEntry, idempotency?: LedgerIdempotencyContext): Promise<JournalEntry>;
+  saveReversal(originalEntryId: string, reversal: JournalEntry, idempotency?: LedgerIdempotencyContext, tenantId?: string): Promise<JournalEntry>;
 }
 
 export interface LedgerIdempotencyContext {

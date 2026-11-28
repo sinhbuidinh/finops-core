@@ -23,7 +23,7 @@ describe('PostJournalEntryUseCase', () => {
       ],
     });
 
-    expect(save).toHaveBeenCalledWith(result, undefined);
+    expect(save).toHaveBeenCalledWith(result, undefined, undefined);
     expect(result.id).toBe('entry-1');
   });
 });

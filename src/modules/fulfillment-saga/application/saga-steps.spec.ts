@@ -8,10 +8,7 @@ import {
 
 const context: FulfillmentContext = {
   sagaId: 'saga-1', orderId: 'order-1', tenantId: 'tenant-1', inventoryItemId: 'sku-1', quantity: 2,
-  payment: { id: 'entry-1', description: 'Order payment', lines: [
-    { accountId: 'cash', side: 'DEBIT', amount: { minorUnits: '100', currency: 'USD' } },
-    { accountId: 'revenue', side: 'CREDIT', amount: { minorUnits: '100', currency: 'USD' } },
-  ] },
+  payment: { id: 'entry-1', description: 'Order payment', walletId: 'wallet-1', amount: { minorUnits: '100', currency: 'USD' } },
 };
 
 describe('fulfillment saga steps', () => {
@@ -36,20 +33,20 @@ describe('fulfillment saga steps', () => {
   });
 
   it('uses a stable ledger idempotency key after a post commits but its response is lost', async () => {
-    const post = vi.fn().mockRejectedValueOnce(new Error('response lost')).mockResolvedValue({ id: 'entry-1' });
-    const step = new SettleLedgerPaymentStep({ post } as never);
+    const postWalletPayment = vi.fn().mockRejectedValueOnce(new Error('response lost')).mockResolvedValue({ id: 'entry-1' });
+    const step = new SettleLedgerPaymentStep({ postWalletPayment } as never);
     const paymentContext = { ...context, ledgerEntryId: undefined };
     await expect(step.execute(paymentContext)).rejects.toThrow('response lost');
     await expect(step.execute(paymentContext)).resolves.toBe('entry-1');
-    expect(post.mock.calls[0]![1]).toEqual(post.mock.calls[1]![1]);
-    expect(post.mock.calls[0]![1]).toMatchObject({ scope: 'fulfillment:saga:post', key: 'saga-1' });
+    expect(postWalletPayment.mock.calls[0]![1]).toEqual(postWalletPayment.mock.calls[1]![1]);
+    expect(postWalletPayment.mock.calls[0]![1]).toMatchObject({ scope: 'fulfillment:saga:post', key: 'saga-1' });
   });
 
   it('moves the order to payment settlement before posting and compensates a posted entry', async () => {
     const onPaymentStarting = vi.fn().mockResolvedValue(undefined);
-    const post = vi.fn().mockResolvedValue({ id: 'entry-1' });
+    const postWalletPayment = vi.fn().mockResolvedValue({ id: 'entry-1' });
     const reverse = vi.fn().mockResolvedValue({ id: 'entry-1:reversal' });
-    const ledger = { post, reverse };
+    const ledger = { postWalletPayment, reverse };
     const step = new SettleLedgerPaymentStep(ledger as never);
     const paymentContext = { ...context, onPaymentStarting };
 
@@ -57,19 +54,19 @@ describe('fulfillment saga steps', () => {
     expect(onPaymentStarting).toHaveBeenCalledOnce();
     expect(paymentContext.ledgerEntryId).toBe('entry-1');
     await step.compensate(paymentContext, 'entry-1');
-    expect(reverse).toHaveBeenCalledWith('entry-1', 'entry-1:reversal', {
+    expect(reverse).toHaveBeenCalledWith('entry-1', 'entry-1:reversal', 'tenant-1', {
       scope: 'fulfillment:saga:reverse', key: 'saga-1', fingerprint: 'entry-1',
     });
   });
 
   it('preserves an explicit payment posting timestamp', async () => {
-    const post = vi.fn().mockResolvedValue({ id: 'entry-1' });
-    const step = new SettleLedgerPaymentStep({ post } as never);
+    const postWalletPayment = vi.fn().mockResolvedValue({ id: 'entry-1' });
+    const step = new SettleLedgerPaymentStep({ postWalletPayment } as never);
     const postedAt = '2026-01-02T03:04:05.000Z';
 
     await step.execute({ ...context, payment: { ...context.payment, postedAt } });
 
-    expect(post.mock.calls[0]?.[0].postedAt.toISOString()).toBe(postedAt);
+    expect(postWalletPayment.mock.calls[0]?.[0].postedAt).toBe(postedAt);
   });
 
   it('releases a reservation during compensation and requires a reservation to release', async () => {
@@ -86,7 +83,7 @@ describe('fulfillment saga steps', () => {
     const step = new ReverseLedgerEntryStep({ reverse } as never);
     await expect(step.execute({ ...context, ledgerEntryId: undefined })).rejects.toThrow('Ledger entry is missing');
     await expect(step.execute({ ...context, ledgerEntryId: 'entry-2' })).resolves.toBe('entry-2');
-    expect(reverse).toHaveBeenCalledWith('entry-2', 'entry-2:reversal', {
+    expect(reverse).toHaveBeenCalledWith('entry-2', 'entry-2:reversal', 'tenant-1', {
       scope: 'fulfillment:saga:reverse', key: 'saga-1', fingerprint: 'entry-2',
     });
     await expect(step.compensate(context, 'unused')).resolves.toBeUndefined();

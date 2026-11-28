@@ -141,10 +141,13 @@ describe('FulfillmentSagaWorker', () => {
     const setInterval = vi.spyOn(globalThis, 'setInterval').mockReturnValue(timer);
     const clearInterval = vi.spyOn(globalThis, 'clearInterval').mockImplementation(() => undefined);
     const idleWorker = new FulfillmentSagaWorker({} as never, {} as never);
-    vi.spyOn(idleWorker, 'runOnce').mockResolvedValue(undefined);
+    const runOnce = vi.spyOn(idleWorker, 'runOnce').mockResolvedValue(undefined);
     idleWorker.onModuleInit();
+    const tick = setInterval.mock.calls[0]?.[0] as () => void;
+    tick();
     idleWorker.onModuleDestroy();
     expect(setInterval).toHaveBeenCalledOnce();
+    expect(runOnce).toHaveBeenCalledTimes(2);
     expect(unref).toHaveBeenCalledOnce();
     expect(clearInterval).toHaveBeenCalledWith(timer);
     setInterval.mockRestore();
@@ -167,5 +170,39 @@ describe('FulfillmentSagaWorker', () => {
     expect(finishQuery).toHaveBeenCalledWith('ROLLBACK');
     expect(poolQuery).toHaveBeenCalledWith(expect.stringContaining("SET state = 'PENDING'"), expect.any(Array));
     expect(finishClient.release).toHaveBeenCalledOnce();
+  });
+
+  it('swallows a rollback failure while scheduling a failed saga for retry', async () => {
+    const startQuery = vi.fn(async (sql: string) => {
+      if (sql.startsWith('SELECT')) return { rows: [row] };
+      if (sql === 'ROLLBACK') throw new Error('connection already closed');
+      return { rows: [], rowCount: 1 };
+    });
+    const poolQuery = vi.fn().mockResolvedValue({ rowCount: 1 });
+    const worker = new FulfillmentSagaWorker(
+      { connect: vi.fn().mockResolvedValue(makeClient(startQuery)), query: poolQuery } as never,
+      { execute: vi.fn().mockRejectedValue(new Error('saga failed')) } as never,
+    );
+
+    await expect(worker.runOnce()).resolves.toBeUndefined();
+    expect(poolQuery).toHaveBeenCalledWith(expect.stringContaining("SET state = 'PENDING'"), expect.any(Array));
+  });
+
+  it('swallows rollback failure when order completion fails', async () => {
+    const startQuery = vi.fn(async (sql: string) => sql.startsWith('SELECT') ? { rows: [row] } : { rows: [], rowCount: 1 });
+    const finishQuery = vi.fn(async (sql: string) => {
+      if (sql.includes('UPDATE fulfillment_orders')) return { rows: [], rowCount: 0 };
+      if (sql === 'ROLLBACK') throw new Error('connection already closed');
+      return { rows: [], rowCount: 1 };
+    });
+    const poolQuery = vi.fn().mockResolvedValue({ rowCount: 1 });
+    const worker = new FulfillmentSagaWorker(
+      { connect: vi.fn().mockResolvedValueOnce(makeClient(startQuery)).mockResolvedValueOnce(makeClient(finishQuery)), query: poolQuery } as never,
+      { execute: vi.fn() } as never,
+    );
+
+    await expect(worker.runOnce()).resolves.toBeUndefined();
+    expect(finishQuery).toHaveBeenCalledWith('ROLLBACK');
+    expect(poolQuery).toHaveBeenCalledWith(expect.stringContaining("SET state = 'PENDING'"), expect.any(Array));
   });
 });

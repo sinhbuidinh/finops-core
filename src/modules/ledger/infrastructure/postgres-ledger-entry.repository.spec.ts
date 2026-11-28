@@ -16,6 +16,33 @@ function makeEntry() {
 }
 
 describe('PostgresLedgerEntryRepository', () => {
+  it('creates wallets transactionally and maps duplicate wallet errors', async () => {
+    const client = { query: vi.fn().mockResolvedValue({ rows: [] }), release: vi.fn() };
+    const repository = new PostgresLedgerEntryRepository({ connect: vi.fn().mockResolvedValue(client) } as unknown as Pool);
+    await expect(repository.createWallet({ walletId: 'wallet-1', tenantId: 'tenant-1', name: 'Main' }))
+      .resolves.toMatchObject({ walletId: 'wallet-1', ledgerAccountId: 'wallet-account:wallet-1' });
+    expect(client.query.mock.calls.at(-1)?.[0]).toBe('COMMIT');
+
+    const duplicate = Object.assign(new Error('duplicate'), { code: '23505' });
+    const duplicateClient = { query: vi.fn().mockImplementation(async (sql: string) => {
+      if (sql.includes('INSERT INTO wallets')) throw duplicate;
+      if (sql === 'ROLLBACK') throw new Error('connection already closed');
+      return { rows: [] };
+    }), release: vi.fn() };
+    const duplicateRepository = new PostgresLedgerEntryRepository({ connect: vi.fn().mockResolvedValue(duplicateClient) } as unknown as Pool);
+    await expect(duplicateRepository.createWallet({ walletId: 'wallet-1', tenantId: 'tenant-1', name: 'Main' }))
+      .rejects.toMatchObject({ code: 'WALLET_ALREADY_EXISTS' });
+    expect(duplicateClient.query.mock.calls.at(-1)?.[0]).toBe('ROLLBACK');
+
+    const failure = new Error('database unavailable');
+    const failedClient = { query: vi.fn().mockImplementation(async (sql: string) => {
+      if (sql.includes('INSERT INTO wallets')) throw failure;
+      return { rows: [] };
+    }), release: vi.fn() };
+    const failedRepository = new PostgresLedgerEntryRepository({ connect: vi.fn().mockResolvedValue(failedClient) } as unknown as Pool);
+    await expect(failedRepository.createWallet({ walletId: 'wallet-1', tenantId: 'tenant-1', name: 'Main' })).rejects.toBe(failure);
+  });
+
   it('persists an entry and all its lines in one transaction', async () => {
     const query = vi.fn().mockResolvedValue({ rowCount: 1, rows: [] });
     const release = vi.fn();
@@ -28,12 +55,45 @@ describe('PostgresLedgerEntryRepository', () => {
     expect(result.id).toBe('entry-1');
     expect(query.mock.calls.map(([sql]) => sql)).toEqual([
       'BEGIN',
+      expect.stringContaining('SELECT account_id, type FROM ledger_accounts'),
+      expect.stringContaining('SELECT ledger_account_id FROM wallets'),
       expect.stringContaining('INSERT INTO journal_entries'),
       expect.stringContaining('INSERT INTO journal_entry_lines'),
       expect.stringContaining('INSERT INTO journal_entry_lines'),
+      expect.stringContaining('INSERT INTO ledger_account_balances'),
+      expect.stringContaining('INSERT INTO ledger_account_balances'),
       'COMMIT',
     ]);
     expect(release).toHaveBeenCalledOnce();
+  });
+
+  it('rejects a wallet debit that would make its normal balance negative', async () => {
+    const query = vi.fn(async (sql: string) => {
+      if (sql.includes('SELECT account_id, type FROM ledger_accounts')) {
+        return { rowCount: 2, rows: [{ account_id: 'wallet', type: 'ASSET' }, { account_id: 'cash', type: 'ASSET' }] };
+      }
+      if (sql.includes('SELECT ledger_account_id FROM wallets')) {
+        return { rowCount: 1, rows: [{ ledger_account_id: 'wallet' }] };
+      }
+      if (sql.includes('SELECT balance_minor_units::text')) {
+        return { rowCount: 1, rows: [{ balance_minor_units: '25' }] };
+      }
+      return { rowCount: 1, rows: [] };
+    });
+    const repository = new PostgresLedgerEntryRepository({
+      connect: vi.fn().mockResolvedValue({ query, release: vi.fn() }),
+    } as unknown as Pool);
+    const entry = JournalEntry.create({
+      id: 'overspend', description: 'Overspend',
+      lines: [
+        { accountId: 'cash', side: 'DEBIT', amount: Money.fromMinorUnits(30n, 'USD') },
+        { accountId: 'wallet', side: 'CREDIT', amount: Money.fromMinorUnits(30n, 'USD') },
+      ],
+    });
+
+    await expect(repository.save(entry, undefined, 'tenant-1')).rejects.toMatchObject({ code: 'INSUFFICIENT_WALLET_BALANCE' });
+    expect(query.mock.calls.some(([sql]) => String(sql).includes('INSERT INTO journal_entries'))).toBe(false);
+    expect(query.mock.calls.at(-1)?.[0]).toBe('ROLLBACK');
   });
 
   it('commits the idempotency result with the journal insert and lines', async () => {
@@ -67,7 +127,7 @@ describe('PostgresLedgerEntryRepository', () => {
 
     await repository.saveReversal('entry-1', reversal);
     const header = query.mock.calls.find(([sql]) => String(sql).includes('INSERT INTO journal_entries'));
-    expect(header?.[1]).toEqual(['entry-2', expect.any(String), reversal.postedAt, 'entry-1']);
+    expect(header?.[1]).toEqual(['entry-2', expect.any(String), reversal.postedAt, 'entry-1', null]);
   });
 
   it('rolls back when an insert fails', async () => {
@@ -113,6 +173,17 @@ describe('PostgresLedgerEntryRepository', () => {
     const entry = await repository.findById('entry-1');
     expect(entry?.lines[0]?.amount.minorUnits).toBe(25n);
     expect(entry?.lines[1]?.memo).toBe('sale');
+  });
+
+  it('scopes entry and reversal reads to the tenant when requested', async () => {
+    const query = vi.fn().mockResolvedValue({ rows: [] });
+    const repository = new PostgresLedgerEntryRepository({ query } as unknown as Pool);
+    await repository.findById('entry-1', 'tenant-1');
+    await repository.findReversalOf('entry-1', 'tenant-1');
+    expect(query.mock.calls[0]?.[0]).toContain('entry.tenant_id = $2');
+    expect(query.mock.calls[0]?.[1]).toEqual(['entry-1', 'tenant-1']);
+    expect(query.mock.calls[1]?.[0]).toContain('entry.tenant_id = $2');
+    expect(query.mock.calls[1]?.[1]).toEqual(['entry-1', 'tenant-1']);
   });
 
   it('maps reversal lookups and all idempotency lookup outcomes', async () => {
@@ -170,6 +241,18 @@ describe('PostgresLedgerEntryRepository', () => {
     expect((await repository.getHistory({ limit: 10, after: { id: 'entry-1', postedAt: new Date('2026-01-01T00:00:00.000Z') } }))[0]?.id).toBe('entry-1');
     expect(query.mock.calls[0]?.[0]).toContain('ORDER BY entry.posted_at DESC');
     expect(query.mock.calls[1]?.[0]).toContain('(entry.posted_at, entry.entry_id) < ($1, $2)');
+  });
+
+  it('applies tenant scoping to history with and without a cursor', async () => {
+    const query = vi.fn().mockResolvedValue({ rows: [] });
+    const repository = new PostgresLedgerEntryRepository({ query } as unknown as Pool);
+    const postedAt = new Date('2026-01-01T00:00:00.000Z');
+    await repository.getHistory({ tenantId: 'tenant-1', limit: 10 });
+    await repository.getHistory({ tenantId: 'tenant-1', limit: 10, after: { id: 'entry-1', postedAt } });
+    expect(query.mock.calls[0]?.[0]).toContain('WHERE entry.tenant_id = $1');
+    expect(query.mock.calls[0]?.[1]).toEqual(['tenant-1', 10]);
+    expect(query.mock.calls[1]?.[0]).toContain('entry.tenant_id = $1 AND');
+    expect(query.mock.calls[1]?.[1]).toEqual(['tenant-1', postedAt, 'entry-1', 10]);
   });
 
   it('replays completed posting transactions without inserting duplicate entries', async () => {

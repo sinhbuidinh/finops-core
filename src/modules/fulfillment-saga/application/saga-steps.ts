@@ -1,6 +1,4 @@
 import type { InventoryService } from '../../inventory/inventory.service.js';
-import { JournalEntry } from '../../ledger/domain/journal-entry.js';
-import { Money } from '../../../shared/domain/money.js';
 import type { LedgerPostingPort } from './ledger-posting.port.js';
 import type { SagaStep } from './saga-step.js';
 
@@ -14,7 +12,8 @@ export interface FulfillmentContext {
     readonly id: string;
     readonly description: string;
     readonly postedAt?: string;
-    readonly lines: readonly { readonly accountId: string; readonly side: 'DEBIT' | 'CREDIT'; readonly amount: { readonly minorUnits: string; readonly currency: string }; readonly memo?: string }[];
+    readonly walletId: string;
+    readonly amount: { readonly minorUnits: string; readonly currency: string };
   };
   onPaymentStarting?: () => Promise<void>;
   reservationId?: string;
@@ -39,13 +38,11 @@ export class SettleLedgerPaymentStep implements SagaStep<FulfillmentContext, str
   constructor(private readonly ledger: LedgerPostingPort) {}
   async execute(context: FulfillmentContext): Promise<string> {
     await context.onPaymentStarting?.();
-    const entry = JournalEntry.create({
-      id: context.payment.id,
-      description: context.payment.description,
-      postedAt: context.payment.postedAt ? new Date(context.payment.postedAt) : undefined,
-      lines: context.payment.lines.map((line) => ({ ...line, amount: Money.fromMinorUnits(BigInt(line.amount.minorUnits), line.amount.currency) })),
-    });
-    const posted = await this.ledger.post(entry, { scope: 'fulfillment:saga:post', key: context.sagaId, fingerprint: context.payment.id });
+    const posted = await this.ledger.postWalletPayment({
+      tenantId: context.tenantId, walletId: context.payment.walletId, entryId: context.payment.id,
+      description: context.payment.description, postedAt: context.payment.postedAt,
+      amount: context.payment.amount,
+    }, { scope: 'fulfillment:saga:post', key: context.sagaId, fingerprint: context.payment.id });
     context.ledgerEntryId = posted.id;
     return posted.id;
   }
@@ -70,7 +67,7 @@ export class ReverseLedgerEntryStep implements SagaStep<FulfillmentContext, stri
   constructor(private readonly ledger: LedgerPostingPort) {}
   async execute(context: FulfillmentContext): Promise<string> {
     if (!context.ledgerEntryId) throw new Error('Ledger entry is missing');
-    await this.ledger.reverse(context.ledgerEntryId, `${context.ledgerEntryId}:reversal`, {
+    await this.ledger.reverse(context.ledgerEntryId, `${context.ledgerEntryId}:reversal`, context.tenantId, {
       scope: 'fulfillment:saga:reverse', key: context.sagaId, fingerprint: context.ledgerEntryId,
     });
     return context.ledgerEntryId;

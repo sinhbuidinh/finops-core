@@ -5,8 +5,8 @@ import type { LedgerEntryRepositoryPort, LedgerIdempotencyContext } from './ledg
 export class PostJournalEntryUseCase {
   constructor(private readonly entries: LedgerEntryRepositoryPort) {}
 
-  async execute(input: JournalEntryInput, idempotency?: LedgerIdempotencyContext): Promise<JournalEntry> {
+  async execute(input: JournalEntryInput, idempotency?: LedgerIdempotencyContext, tenantId?: string): Promise<JournalEntry> {
     const entry = JournalEntry.create(input);
-    return this.entries.save(entry, idempotency);
+    return this.entries.save(entry, idempotency, tenantId);
   }
 }

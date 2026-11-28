@@ -64,6 +64,12 @@ describe('AuthUserRepository', () => {
     await expect(repository.listByTenant('tenant-1')).resolves.toEqual([]);
   });
 
+  it('returns undefined when a valid user id has no matching row', async () => {
+    const pool = { query: vi.fn().mockResolvedValue({ rows: [] }) };
+    const repository = new AuthUserRepository(pool as never);
+    await expect(repository.findById('123e4567-e89b-42d3-a456-426614174000')).resolves.toBeUndefined();
+  });
+
   it('updates assigned roles and reports missing assignments and users', async () => {
     const pool = { query: vi.fn().mockResolvedValueOnce({ rowCount: 0 }).mockResolvedValueOnce({ rowCount: 1 }).mockResolvedValueOnce({ rowCount: 1 }) };
     const repository = new AuthUserRepository(pool as never);

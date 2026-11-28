@@ -1,5 +1,5 @@
 import { randomUUID } from 'node:crypto';
-import { existsSync, readFileSync } from 'node:fs';
+import { readFileSync } from 'node:fs';
 import { join } from 'node:path';
 import { Pool } from 'pg';
 import { FulfillmentSaga } from '../../src/modules/fulfillment-saga/application/fulfillment-saga.js';
@@ -12,17 +12,10 @@ import { LedgerService } from '../../src/modules/ledger/ledger.service.js';
 import { PostJournalEntryUseCase } from '../../src/modules/ledger/application/post-journal-entry.use-case.js';
 import { ReverseJournalEntryUseCase } from '../../src/modules/ledger/application/reverse-journal-entry.use-case.js';
 import { PostgresLedgerEntryRepository } from '../../src/modules/ledger/infrastructure/postgres-ledger-entry.repository.js';
+import { describeWithTestDatabase, testDatabaseUrl } from '../helpers/test-database.js';
 
-if (!process.env.INVENTORY_TEST_DATABASE_URL && existsSync('.env')) process.loadEnvFile('.env');
-const connectionString = process.env.INVENTORY_TEST_DATABASE_URL;
-const testDatabaseUrl = connectionString ? new URL(connectionString) : undefined;
-// docker-compose sets DB_HOST=postgres for the API container. There, loopback
-// refers to the API container rather than PostgreSQL; use the compose service DNS.
-if (testDatabaseUrl && process.env.DB_HOST === 'postgres') testDatabaseUrl.hostname = 'postgres';
-const integration = connectionString ? describe : describe.skip;
-
-integration('fulfillment saga PostgreSQL recovery', () => {
-  const pool = new Pool({ connectionString: testDatabaseUrl?.toString(), max: 5 });
+describeWithTestDatabase('fulfillment saga PostgreSQL recovery', () => {
+  const pool = new Pool({ connectionString: testDatabaseUrl, max: 5 });
   const inventory = new InventoryService(new PostgresInventoryRepository(pool));
   const ledgerRepository = new PostgresLedgerEntryRepository(pool);
   const ledger = new LedgerService(
@@ -40,17 +33,21 @@ integration('fulfillment saga PostgreSQL recovery', () => {
   beforeAll(async () => {
     for (const migration of [
       '001_reliability_tables.sql', '002_ledger.sql', '003_inventory.sql',
-      '004_fulfillment_saga.sql', '005_fulfillment_orders.sql', '006_idempotent_stock_reservations.sql', '007_tenant_scoped_inventory.sql',
+      '004_fulfillment_saga.sql', '005_fulfillment_orders.sql', '006_idempotent_stock_reservations.sql', '007_tenant_scoped_inventory.sql', '012_ledger_account_balances.sql', '013_tenant_wallet_ledger.sql',
     ]) {
       await pool.query(readFileSync(join(process.cwd(), 'src/shared/infrastructure/database/migrations', migration), 'utf8'));
     }
-    await pool.query(`INSERT INTO ledger_accounts (account_id, name, type) VALUES ($1, 'Saga cash', 'ASSET'), ($2, 'Saga revenue', 'REVENUE')`, [`${prefix}-cash`, `${prefix}-revenue`]);
+    const wallet = await ledgerRepository.createWallet({ walletId: `${prefix}-wallet`, tenantId: prefix, name: 'Saga wallet' });
+    await pool.query(
+      'INSERT INTO ledger_account_balances (account_id, currency, balance_minor_units) VALUES ($1, $2, $3)',
+      [wallet.ledgerAccountId, 'USD', '500'],
+    );
     await inventory.createItem({ tenantId: prefix, id: `${prefix}-sku`, totalQty: 4 });
     const saga = new FulfillmentSaga([
       new ReserveInventoryStep(inventory),
       new SettleLedgerPaymentStep({
-        post: async (...args: Parameters<LedgerPostingAdapter['post']>) => {
-          const posted = await adapter.post(...args);
+        postWalletPayment: async (...args: Parameters<LedgerPostingAdapter['postWalletPayment']>) => {
+          const posted = await adapter.postWalletPayment(...args);
           if (loseFirstResponse) {
             loseFirstResponse = false;
             throw new Error('ledger response lost after commit');
@@ -80,10 +77,7 @@ integration('fulfillment saga PostgreSQL recovery', () => {
       sagaId, orderId, tenantId: prefix, inventoryItemId: `${prefix}-sku`, quantity: 2,
       payment: {
         id: entryId, description: 'Integration order payment', postedAt: new Date().toISOString(),
-        lines: [
-          { accountId: `${prefix}-cash`, side: 'DEBIT' as const, amount: { minorUnits: '500', currency: 'USD' } },
-          { accountId: `${prefix}-revenue`, side: 'CREDIT' as const, amount: { minorUnits: '500', currency: 'USD' } },
-        ],
+        walletId: `${prefix}-wallet`, amount: { minorUnits: '500', currency: 'USD' },
       },
     };
     await pool.query('INSERT INTO fulfillment_saga_jobs (saga_id, order_id, payload) VALUES ($1, $2, $3)', [sagaId, orderId, payload]);

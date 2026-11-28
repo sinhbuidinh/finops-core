@@ -10,6 +10,7 @@ import { AuthUserRepository } from './auth-user.repository.js';
 import { UserManagementService } from './user-management.service.js';
 import { SuperAdminGuard } from './super-admin.guard.js';
 import { TenantAdminGuard } from './tenant-admin.guard.js';
+import { LedgerController } from '../../../modules/ledger/ledger.controller.js';
 
 @Global()
 @Module({
@@ -19,6 +20,6 @@ import { TenantAdminGuard } from './tenant-admin.guard.js';
 })
 export class TenantModule implements NestModule {
   configure(consumer: MiddlewareConsumer): void {
-    consumer.apply(TenantContextMiddleware).forRoutes(InventoryController, OrdersController);
+    consumer.apply(TenantContextMiddleware).forRoutes(InventoryController, OrdersController, LedgerController);
   }
 }

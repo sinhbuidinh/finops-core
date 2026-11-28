@@ -29,21 +29,21 @@ export interface LedgerAccountBalance {
 export class PostgresLedgerEntryRepository implements LedgerEntryRepositoryPort {
   constructor(@Inject(POSTGRES_POOL) private readonly pool: Pool) {}
 
-  save(entry: JournalEntry, idempotency?: LedgerIdempotencyContext): Promise<JournalEntry> {
-    return this.persist(entry, undefined, idempotency);
+  save(entry: JournalEntry, idempotency?: LedgerIdempotencyContext, tenantId?: string): Promise<JournalEntry> {
+    return this.persist(entry, undefined, idempotency, tenantId);
   }
 
-  saveReversal(originalEntryId: string, reversal: JournalEntry, idempotency?: LedgerIdempotencyContext): Promise<JournalEntry> {
-    return this.persist(reversal, originalEntryId, idempotency);
+  saveReversal(originalEntryId: string, reversal: JournalEntry, idempotency?: LedgerIdempotencyContext, tenantId?: string): Promise<JournalEntry> {
+    return this.persist(reversal, originalEntryId, idempotency, tenantId);
   }
 
-  async findById(id: string): Promise<JournalEntry | null> {
-    const result = await this.pool.query<EntryRow>(`${ENTRY_SELECT} WHERE entry.entry_id = $1`, [id]);
+  async findById(id: string, tenantId?: string): Promise<JournalEntry | null> {
+    const result = await this.pool.query<EntryRow>(`${ENTRY_SELECT} WHERE entry.entry_id = $1${tenantId ? ' AND entry.tenant_id = $2' : ''}`, tenantId ? [id, tenantId] : [id]);
     return result.rows[0] ? this.toDomain(result.rows[0]) : null;
   }
 
-  async findReversalOf(originalEntryId: string): Promise<JournalEntry | null> {
-    const result = await this.pool.query<EntryRow>(`${ENTRY_SELECT} WHERE entry.reversal_of_entry_id = $1`, [originalEntryId]);
+  async findReversalOf(originalEntryId: string, tenantId?: string): Promise<JournalEntry | null> {
+    const result = await this.pool.query<EntryRow>(`${ENTRY_SELECT} WHERE entry.reversal_of_entry_id = $1${tenantId ? ' AND entry.tenant_id = $2' : ''}`, tenantId ? [originalEntryId, tenantId] : [originalEntryId]);
     return result.rows[0] ? this.toDomain(result.rows[0]) : null;
   }
 
@@ -66,21 +66,39 @@ export class PostgresLedgerEntryRepository implements LedgerEntryRepositoryPort 
     return this.fromStored(record.response_body);
   }
 
-  async getBalance(accountId: string): Promise<LedgerAccountBalance[]> {
+  async createWallet(input: { walletId: string; tenantId: string; name: string }): Promise<{ walletId: string; tenantId: string; ledgerAccountId: string }> {
+    const client = await this.pool.connect();
+    const accountId = `wallet-account:${input.walletId}`;
+    try {
+      await client.query('BEGIN');
+      await client.query(`INSERT INTO ledger_accounts (account_id, name, type, tenant_id) VALUES ($1, $2, 'ASSET', $3)`, [accountId, input.name, input.tenantId]);
+      await client.query(`INSERT INTO wallets (wallet_id, tenant_id, ledger_account_id) VALUES ($1, $2, $3)`, [input.walletId, input.tenantId, accountId]);
+      await client.query('COMMIT');
+      return { walletId: input.walletId, tenantId: input.tenantId, ledgerAccountId: accountId };
+    } catch (error) {
+      await client.query('ROLLBACK').catch(() => undefined);
+      if (isUniqueViolation(error)) throw new DomainConflictError('Wallet already exists', 'WALLET_ALREADY_EXISTS');
+      throw error;
+    } finally { client.release(); }
+  }
+
+  async findWallet(walletId: string, tenantId: string): Promise<{ walletId: string; ledgerAccountId: string } | null> {
+    const result = await this.pool.query<{ wallet_id: string; ledger_account_id: string }>(
+      'SELECT wallet_id, ledger_account_id FROM wallets WHERE wallet_id = $1 AND tenant_id = $2', [walletId, tenantId]);
+    return result.rows[0] ? { walletId: result.rows[0].wallet_id, ledgerAccountId: result.rows[0].ledger_account_id } : null;
+  }
+
+  async getBalance(accountId: string, tenantId: string): Promise<LedgerAccountBalance[]> {
     const result = await this.pool.query<{
       account_id: string; name: string; type: string; currency: string; balance_minor_units: string;
     }>(
-      `SELECT account.account_id, account.name, account.type, line.currency,
-              SUM(CASE
-                WHEN (account.type IN ('ASSET', 'EXPENSE') AND line.side = 'DEBIT')
-                  OR (account.type IN ('LIABILITY', 'EQUITY', 'REVENUE') AND line.side = 'CREDIT')
-                THEN line.amount_minor_units ELSE -line.amount_minor_units END)::text AS balance_minor_units
+      `SELECT account.account_id, account.name, account.type, balance.currency,
+              balance.balance_minor_units::text AS balance_minor_units
          FROM ledger_accounts account
-         LEFT JOIN journal_entry_lines line ON line.account_id = account.account_id
-        WHERE account.account_id = $1
-        GROUP BY account.account_id, account.name, account.type, line.currency
-        ORDER BY line.currency NULLS FIRST`,
-      [accountId],
+         LEFT JOIN ledger_account_balances balance ON balance.account_id = account.account_id
+        WHERE account.account_id = $1 AND account.tenant_id = $2
+        ORDER BY balance.currency NULLS FIRST`,
+      [accountId, tenantId],
     );
     if (!result.rowCount) throw new DomainNotFoundError(`Ledger account not found: ${accountId}`);
     return result.rows.map((row) => ({
@@ -92,16 +110,18 @@ export class PostgresLedgerEntryRepository implements LedgerEntryRepositoryPort 
     }));
   }
 
-  async getHistory(input: { readonly after?: { readonly postedAt: Date; readonly id: string }; readonly limit: number }): Promise<JournalEntry[]> {
+  async getHistory(input: { readonly after?: { readonly postedAt: Date; readonly id: string }; readonly limit: number; readonly tenantId?: string }): Promise<JournalEntry[]> {
+    const tenantFilter = input.tenantId ? 'entry.tenant_id = $1 AND ' : '';
+    const offset = input.tenantId ? 1 : 0;
     const result = input.after
       ? await this.pool.query<EntryRow>(
-          `${ENTRY_SELECT} WHERE (entry.posted_at, entry.entry_id) < ($1, $2)
-            ORDER BY entry.posted_at DESC, entry.entry_id DESC LIMIT $3`,
-          [input.after.postedAt, input.after.id, input.limit],
+          `${ENTRY_SELECT} WHERE ${tenantFilter}(entry.posted_at, entry.entry_id) < ($${1 + offset}, $${2 + offset})
+            ORDER BY entry.posted_at DESC, entry.entry_id DESC LIMIT $${3 + offset}`,
+          [...(input.tenantId ? [input.tenantId] : []), input.after.postedAt, input.after.id, input.limit],
         )
       : await this.pool.query<EntryRow>(
-          `${ENTRY_SELECT} ORDER BY entry.posted_at DESC, entry.entry_id DESC LIMIT $1`,
-          [input.limit],
+          `${ENTRY_SELECT} ${input.tenantId ? 'WHERE entry.tenant_id = $1' : ''} ORDER BY entry.posted_at DESC, entry.entry_id DESC LIMIT $${1 + offset}`,
+          [...(input.tenantId ? [input.tenantId] : []), input.limit],
         );
     return result.rows.map((row) => this.toDomain(row));
   }
@@ -110,6 +130,7 @@ export class PostgresLedgerEntryRepository implements LedgerEntryRepositoryPort 
     entry: JournalEntry,
     reversalOfEntryId?: string,
     idempotency?: LedgerIdempotencyContext,
+    tenantId?: string,
   ): Promise<JournalEntry> {
     const client = await this.pool.connect();
     try {
@@ -121,7 +142,7 @@ export class PostgresLedgerEntryRepository implements LedgerEntryRepositoryPort 
           return replay;
         }
       }
-      await this.insertEntry(client, entry, reversalOfEntryId);
+      await this.insertEntry(client, entry, reversalOfEntryId, tenantId);
       if (idempotency) {
         await client.query(
           `UPDATE idempotency_keys
@@ -190,17 +211,88 @@ export class PostgresLedgerEntryRepository implements LedgerEntryRepositoryPort 
     throw new DomainConflictError('A request with this idempotency key is already in progress', 'IDEMPOTENCY_IN_PROGRESS');
   }
 
-  private async insertEntry(client: PoolClient, entry: JournalEntry, reversalOfEntryId?: string): Promise<void> {
+  private async insertEntry(client: PoolClient, entry: JournalEntry, reversalOfEntryId?: string, tenantId?: string): Promise<void> {
+    const accountIds = [...new Set(entry.lines.map((line) => line.accountId))].sort();
+    const accounts = await client.query<{ account_id: string; type: string }>(
+      `SELECT account_id, type FROM ledger_accounts
+        WHERE account_id = ANY($1::text[]) ${tenantId ? "AND (tenant_id = $2 OR (tenant_id IS NULL AND account_id = 'platform:order-clearing'))" : ''}
+        ORDER BY account_id FOR UPDATE`,
+      tenantId ? [accountIds, tenantId] : [accountIds],
+    );
+    if (tenantId && accounts.rowCount !== accountIds.length) {
+      throw new DomainNotFoundError('One or more ledger accounts are not available to this tenant');
+    }
+    await this.ensureWalletBalancesNonNegative(client, entry, new Map(accounts.rows.map((account) => [account.account_id, account.type])));
     await client.query(
-      `INSERT INTO journal_entries (entry_id, description, posted_at, reversal_of_entry_id)
-       VALUES ($1, $2, $3, $4)`,
-      [entry.id, entry.description, entry.postedAt, reversalOfEntryId ?? entry.reversalOfEntryId ?? null],
+      `INSERT INTO journal_entries (entry_id, description, posted_at, reversal_of_entry_id, tenant_id)
+       VALUES ($1, $2, $3, $4, $5)`,
+      [entry.id, entry.description, entry.postedAt, reversalOfEntryId ?? entry.reversalOfEntryId ?? null, tenantId ?? null],
     );
     for (const [index, line] of entry.lines.entries()) {
       await client.query(
         `INSERT INTO journal_entry_lines (entry_id, line_number, account_id, side, amount_minor_units, currency, memo)
          VALUES ($1, $2, $3, $4, $5, $6, $7)`,
         [entry.id, index + 1, line.accountId, line.side, line.amount.minorUnits.toString(), line.amount.currency, line.memo ?? null],
+      );
+    }
+    await this.updateAccountBalances(client, entry);
+  }
+
+  private async ensureWalletBalancesNonNegative(client: PoolClient, entry: JournalEntry, accountTypes: Map<string, string>): Promise<void> {
+    const deltas = new Map<string, { accountId: string; currency: string; debitMinusCredit: bigint }>();
+    for (const line of entry.lines) {
+      const key = `${line.accountId}\u0000${line.amount.currency}`;
+      const delta = deltas.get(key) ?? { accountId: line.accountId, currency: line.amount.currency, debitMinusCredit: 0n };
+      delta.debitMinusCredit += line.side === 'DEBIT' ? line.amount.minorUnits : -line.amount.minorUnits;
+      deltas.set(key, delta);
+    }
+    const walletIds = [...new Set([...deltas.values()].map((delta) => delta.accountId))];
+    const walletRows = await client.query<{ ledger_account_id: string }>(
+      'SELECT ledger_account_id FROM wallets WHERE ledger_account_id = ANY($1::text[])', [walletIds],
+    );
+    const walletAccounts = new Set(walletRows.rows.map((row) => row.ledger_account_id));
+    if (!walletAccounts.size) return;
+
+    for (const delta of [...deltas.values()].filter((item) => walletAccounts.has(item.accountId))) {
+      const result = await client.query<{ balance_minor_units: string | null }>(
+        `SELECT balance_minor_units::text AS balance_minor_units FROM ledger_account_balances
+          WHERE account_id = $1 AND currency = $2`, [delta.accountId, delta.currency],
+      );
+      const normalSign = ['ASSET', 'EXPENSE'].includes(accountTypes.get(delta.accountId) ?? '') ? 1n : -1n;
+      const current = BigInt(result.rows[0]?.balance_minor_units ?? '0');
+      if (current + delta.debitMinusCredit * normalSign < 0n) {
+        throw new DomainConflictError('Wallet balance is insufficient for this posting', 'INSUFFICIENT_WALLET_BALANCE');
+      }
+    }
+  }
+
+  private async updateAccountBalances(client: PoolClient, entry: JournalEntry): Promise<void> {
+    const netByAccountCurrency = new Map<string, { accountId: string; currency: string; debitMinusCredit: bigint }>();
+    for (const line of entry.lines) {
+      const key = `${line.accountId}\u0000${line.amount.currency}`;
+      const current = netByAccountCurrency.get(key) ?? {
+        accountId: line.accountId,
+        currency: line.amount.currency,
+        debitMinusCredit: 0n,
+      };
+      current.debitMinusCredit += line.side === 'DEBIT' ? line.amount.minorUnits : -line.amount.minorUnits;
+      netByAccountCurrency.set(key, current);
+    }
+
+    // A stable lock order prevents concurrent entries touching multiple accounts from deadlocking.
+    const balances = [...netByAccountCurrency.values()].sort((a, b) =>
+      a.accountId.localeCompare(b.accountId) || a.currency.localeCompare(b.currency));
+    for (const balance of balances) {
+      await client.query(
+        `INSERT INTO ledger_account_balances (account_id, currency, balance_minor_units)
+         SELECT account.account_id, $2,
+                CASE WHEN account.type IN ('ASSET', 'EXPENSE') THEN $3::numeric ELSE -$3::numeric END
+           FROM ledger_accounts account
+          WHERE account.account_id = $1
+         ON CONFLICT (account_id, currency) DO UPDATE
+           SET balance_minor_units = ledger_account_balances.balance_minor_units + EXCLUDED.balance_minor_units,
+               updated_at = now()`,
+        [balance.accountId, balance.currency, balance.debitMinusCredit.toString()],
       );
     }
   }

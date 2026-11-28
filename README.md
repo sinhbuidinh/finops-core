@@ -10,11 +10,13 @@ docker run --rm -v "${PWD}:/app" -w /app node:20-alpine npx -y @nestjs/cli new .
 docker compose up -d postgres redis
 ```
 
-# Apply the reliability tables before starting the API
+# Apply database migrations
 
 ```sh
-docker compose exec -T postgres psql -v ON_ERROR_STOP=1 -U postgres -d finops_core < src/shared/infrastructure/database/migrations/001_reliability_tables.sql
+npm run db:migrate
 ```
+
+The migration runner records applied filenames in `schema_migrations` and applies each new SQL file once. For an existing database that has already had every migration currently in the repository applied, initialize the history once with `npm run db:migrate -- --baseline`; this records the current files without executing them. Do not baseline a fresh or partially migrated database. Add a new migration file for schema changes instead of editing a migration that has already been applied.
 
 # Build and start the API
 
@@ -34,4 +36,4 @@ The database connection uses `DATABASE_URL` when set; otherwise it reads `DB_HOS
 
 For transactional events, call `OutboxRepository.enqueue()` with the same `PoolClient` used for domain writes. Register delivery handlers with `OutboxEventBus.subscribe(eventName, handler)`; a delivery is marked published only after all matching handlers resolve. Failures retry with capped exponential backoff and then move to `DEAD_LETTER` for inspection.
 
-Outbox delivery allows three total attempts by default (the initial delivery plus two retries). Set `OUTBOX_MAX_ATTEMPTS` to a positive integer to change the limit; for example, `OUTBOX_MAX_ATTEMPTS=5` permits five total delivery attempts. The relay and order creation require the `outbox_events` table, so apply the reliability migration above to the same PostgreSQL database configured by `DATABASE_URL` (or the `DB_*` settings).
+Outbox delivery allows three total attempts by default (the initial delivery plus two retries). Set `OUTBOX_MAX_ATTEMPTS` to a positive integer to change the limit; for example, `OUTBOX_MAX_ATTEMPTS=5` permits five total delivery attempts. The relay and order creation require the `outbox_events` table, so run the migration command against the same PostgreSQL database configured by `DATABASE_URL` (or the `DB_*` settings).

@@ -8,6 +8,8 @@ export default defineConfig({
     globals: true,
     root: './',
     include: ['**/*.spec.ts'],
+    // PostgreSQL integration suites apply migrations to the same test database.
+    fileParallelism: false,
     coverage: {
       include: process.env.COVERAGE_FILES ? JSON.parse(process.env.COVERAGE_FILES) as string[] : undefined,
       exclude: ['**/*.spec.ts'],

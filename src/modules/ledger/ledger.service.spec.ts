@@ -17,6 +17,8 @@ describe('LedgerService', () => {
     const post = { execute: vi.fn().mockResolvedValue(entry) };
     const reverse = { execute: vi.fn().mockResolvedValue(entry) };
     const entries = {
+      createWallet: vi.fn().mockResolvedValue({ walletId: 'wallet-1', tenantId: 'tenant-1', ledgerAccountId: 'wallet-account:wallet-1' }),
+      findWallet: vi.fn().mockResolvedValue({ walletId: 'wallet-1', ledgerAccountId: 'wallet-account:wallet-1' }),
       getBalance: vi.fn().mockResolvedValue([]),
       getHistory: vi.fn().mockResolvedValue(history),
     };
@@ -38,8 +40,8 @@ describe('LedgerService', () => {
       reversalEntryId: 'entry-2',
       idempotency: { scope: 'ledger:reverse', key: 'reverse-key' },
     });
-    await service.getBalance('cash');
-    expect(entries.getBalance).toHaveBeenCalledWith('cash');
+    await service.getBalance('cash', 'tenant-1');
+    expect(entries.getBalance).toHaveBeenCalledWith('cash', 'tenant-1');
   });
 
   it('validates page size and cursor, and returns a cursor only when another page exists', async () => {
@@ -67,5 +69,40 @@ describe('LedgerService', () => {
       .rejects.toThrow('Invalid journal history cursor');
     await expect(service.getHistory(Buffer.from(JSON.stringify({ id: 'entry-1', postedAt: 'invalid' })).toString('base64url'), '1'))
       .rejects.toThrow('Invalid journal history cursor');
+  });
+
+  it('creates wallets and posts wallet payments with an idempotency fingerprint', async () => {
+    const { service, post, entries } = setup();
+    await expect(service.createWallet('tenant-1', 'wallet-1', 'Main')).resolves.toEqual({ walletId: 'wallet-1', tenantId: 'tenant-1' });
+    expect(entries.createWallet).toHaveBeenCalledWith({ tenantId: 'tenant-1', walletId: 'wallet-1', name: 'Main' });
+    await expect(service.findWallet('wallet-1', 'tenant-1')).resolves.toEqual({ walletId: 'wallet-1', ledgerAccountId: 'wallet-account:wallet-1' });
+
+    await service.postWalletPayment({
+      tenantId: 'tenant-1', walletId: 'wallet-1', entryId: 'payment-1', description: 'Order payment',
+      postedAt: '2026-01-02T00:00:00.000Z', amount: { minorUnits: '25', currency: 'USD' },
+    }, 'payment-key');
+    const [payment, context, tenantId] = post.execute.mock.calls[0]!;
+    expect(payment.lines.map((line: { accountId: string; side: string; amount: Money }) => [line.accountId, line.side, line.amount.minorUnits])).toEqual([
+      ['platform:order-clearing', 'DEBIT', 25n], ['wallet-account:wallet-1', 'CREDIT', 25n],
+    ]);
+    expect(context).toMatchObject({ scope: 'ledger:post', key: 'payment-key' });
+    expect(context.fingerprint).toMatch(/^[a-f0-9]{64}$/);
+    expect(tenantId).toBe('tenant-1');
+
+    await service.postWalletPayment({
+      tenantId: 'tenant-1', walletId: 'wallet-1', entryId: 'payment-2', description: 'Payment without explicit date',
+      amount: { minorUnits: '5', currency: 'USD' },
+    }, 'payment-key-2');
+    expect(post.execute.mock.calls[1]?.[0].postedAt).toBeInstanceOf(Date);
+  });
+
+  it('rejects wallet payments for unknown wallets', async () => {
+    const { service, entries, post } = setup();
+    entries.findWallet.mockResolvedValueOnce(null);
+    await expect(service.postWalletPayment({
+      tenantId: 'tenant-1', walletId: 'missing', entryId: 'payment-1', description: 'Payment',
+      amount: { minorUnits: '1', currency: 'USD' },
+    }, 'payment-key')).rejects.toThrow('Wallet not found');
+    expect(post.execute).not.toHaveBeenCalled();
   });
 });

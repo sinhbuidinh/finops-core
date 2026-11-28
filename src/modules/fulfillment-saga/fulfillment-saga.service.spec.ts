@@ -4,7 +4,7 @@ import { OrderState } from './domain/order-state-machine.js';
 
 const payload = {
   tenantId: 'tenant-1', inventoryItemId: 'sku-1', quantity: 2,
-  payment: { id: 'entry-1', description: 'Order payment', lines: [] },
+  payment: { id: 'entry-1', description: 'Order payment', walletId: 'wallet-1', amount: { minorUnits: '100', currency: 'USD' } },
 };
 
 function setup() {
@@ -27,7 +27,9 @@ describe('FulfillmentSagaService', () => {
     for (const invalid of [
       { ...payload, tenantId: '' }, { ...payload, inventoryItemId: '' }, { ...payload, quantity: 0 },
       { ...payload, quantity: 1.5 }, { ...payload, payment: { ...payload.payment, id: '' } },
-      { ...payload, payment: { ...payload.payment, lines: null } },
+      { ...payload, payment: null as never },
+      { ...payload, payment: { ...payload.payment, walletId: '' } },
+      { ...payload, payment: { ...payload.payment, lines: [{ accountId: 'attacker-account' }] } },
       { ...payload, payment: { ...payload.payment, postedAt: 'invalid-date' } },
     ]) await expect(service.createOrder(invalid, 'key')).rejects.toThrow(BadRequestException);
     expect(idempotency.acquire).not.toHaveBeenCalled();

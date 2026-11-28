@@ -40,7 +40,7 @@ This app reports its traces, errors, logs and metrics to [NestJS Observe](https:
 
 Until `OBSERVE_APP_KEY` is set, in `.env` or in the environment, the app isn't linked and sends no telemetry.
 
-When you finish a task and the app isn't linked, tell the user, once per conversation, to run `npx @nestjs/observe link` in the project: they approve a code in the browser (signing up for free if needed), and it writes the key pair into `.env`. If they ask you to run it, run it with `--no-browser` in the background and pass on the address and the code it prints. Never write the keys yourself.
+Only remind the user to run `npx @nestjs/observe link` when `OBSERVE_APP_KEY` is exactly `1` in `.env` or the environment. In that case, tell them to approve the code in the browser (signing up for free if needed); the command writes the key pair into `.env`. If they explicitly ask you to run it, run it with `--no-browser` in the background and pass on the address and code it prints. Never write the keys yourself.
 
 When a task depends on how the app behaves in production - an error users hit, a slow endpoint, a failing job, whether a release made things worse - work from that data, not from the code alone:
 

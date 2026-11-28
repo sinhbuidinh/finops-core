@@ -34,7 +34,7 @@ describe('ReverseJournalEntryUseCase', () => {
     const reversal = await useCase.execute({ originalEntryId: original.id, reversalEntryId: 'entry-2' });
 
     expect(reversal.reversalOfEntryId).toBe(original.id);
-    expect(saveReversal).toHaveBeenCalledWith(original.id, reversal, undefined);
+    expect(saveReversal).toHaveBeenCalledWith(original.id, reversal, undefined, undefined);
     expect(save).not.toHaveBeenCalled();
     expect(original.lines.map(({ side, amount }) => [side, amount.toJSON()])).toEqual(before);
   });
@@ -76,6 +76,6 @@ describe('ReverseJournalEntryUseCase', () => {
     expect(findIdempotentResult).toHaveBeenCalledOnce();
     expect(saveReversal).toHaveBeenCalledWith(original.id, result, {
       scope: 'ledger:reverse', key: 'key', fingerprint: 'fingerprint',
-    });
+    }, undefined);
   });
 });

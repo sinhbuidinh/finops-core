@@ -148,22 +148,59 @@ curl -i -X POST "$BASE_URL/inventory/reservations/$RESERVATION_ID/release" \
 
 The release route scopes the reservation by tenant. Releasing an unknown reservation or one from a different tenant returns not found.
 
-## 5. Prepare ledger accounts for payment
+## 5. Create a tenant wallet
 
-The fulfillment saga posts the supplied payment as a balanced journal entry. This app has no HTTP endpoint to create ledger accounts, so create the account IDs once in PostgreSQL (or use accounts already provisioned in your database):
+Wallet IDs are separate from login user IDs and internal ledger account IDs. The API creates the wallet and its tenant-owned ledger account together. The authenticated caller must be a member of the selected tenant.
 
 ```sh
-psql "$DATABASE_URL" -v ON_ERROR_STOP=1 <<'SQL'
-INSERT INTO ledger_accounts (account_id, name, type) VALUES
-  ('cash', 'Cash', 'ASSET'),
-  ('sales-revenue', 'Sales revenue', 'REVENUE')
-ON CONFLICT (account_id) DO NOTHING;
-SQL
+curl -i -X POST "$BASE_URL/ledger/wallets" \
+  -H "Authorization: Bearer $TOKEN" \
+  -H "X-Tenant-Id: $TENANT_ID" \
+  -H 'Content-Type: application/json' \
+  -d '{"walletId":"wallet-1001","name":"Operating wallet"}'
 ```
 
-The following order example debits cash and credits sales revenue by 1,000 USD minor units (USD cents).
+To read a balance, use the wallet route. The ledger account ID is never needed by the client:
 
-## 6. Create the order
+```sh
+curl -i "$BASE_URL/ledger/wallets/wallet-1001/balance" \
+  -H "Authorization: Bearer $TOKEN" \
+  -H "X-Tenant-Id: $TENANT_ID"
+```
+
+Direct ledger entry and account balance routes also require tenant authentication. A posting can reference only accounts owned by that tenant and the designated platform clearing account.
+
+## 6. Fund the wallet, then check its balance
+
+A new wallet starts with a zero balance. For this local walkthrough, post a balanced funding entry that debits the wallet and credits the platform clearing account. Use a unique journal entry ID and idempotency key. In production, the counterpart must represent a real funding/settlement source; this example does not move external money.
+
+```sh
+curl -i -X POST "$BASE_URL/ledger/entries" \
+  -H "Authorization: Bearer $TOKEN" \
+  -H "X-Tenant-Id: $TENANT_ID" \
+  -H 'Content-Type: application/json' \
+  -H 'Idempotency-Key: wallet-funding-wallet-1001-001' \
+  -d '{
+    "id":"fund-wallet-1001-001",
+    "description":"Demo wallet funding",
+    "lines":[
+      {"accountId":"wallet-account:wallet-1001","side":"DEBIT","amount":{"minorUnits":"10000","currency":"USD"}},
+      {"accountId":"platform:order-clearing","side":"CREDIT","amount":{"minorUnits":"10000","currency":"USD"}}
+    ]
+  }'
+```
+
+Now check the wallet balance before creating the order:
+
+```sh
+curl -i "$BASE_URL/ledger/wallets/wallet-1001/balance" \
+  -H "Authorization: Bearer $TOKEN" \
+  -H "X-Tenant-Id: $TENANT_ID"
+```
+
+The response should show `balanceMinorUnits: "10000"` for USD. Keep the currency consistent with the order payment. A wallet payment reduces this balance; the ledger rejects spending beyond the available balance. If funding was skipped or the balance is too low, the asynchronous order can fail during payment settlement after inventory reservation, and the saga releases the reservation.
+
+## 7. Create the order
 
 Send a unique `Idempotency-Key` for this create request. If the client retries the same request after a network issue, reuse that key and the API replays the original response. Use a new key for a different order.
 
@@ -179,10 +216,8 @@ curl -i -X POST "$BASE_URL/orders" \
     "payment":{
       "id":"payment-tenant-1-001",
       "description":"Payment for order",
-      "lines":[
-        {"accountId":"cash","side":"DEBIT","amount":{"minorUnits":"1000","currency":"USD"}},
-        {"accountId":"sales-revenue","side":"CREDIT","amount":{"minorUnits":"1000","currency":"USD"}}
-      ]
+      "walletId":"wallet-1001",
+      "amount":{"minorUnits":"1000","currency":"USD"}
     }
   }'
 ```
@@ -195,7 +230,7 @@ ORDER_ID=<id-from-order-response>
 
 The initial response can say `APPROVED`. A background worker then moves the order through `RESERVING_STOCK` and `SETTLING_PAYMENT` to `CONFIRMED`. Those intermediate states can pass quickly.
 
-## 7. Poll for order status and verify stock
+## 8. Poll for order status and verify stock and balance
 
 ```sh
 curl -i "$BASE_URL/orders/$ORDER_ID" \
@@ -204,9 +239,12 @@ curl -i "$BASE_URL/orders/$ORDER_ID" \
 curl -i "$BASE_URL/inventory/items/$SKU" \
   -H "Authorization: Bearer $TOKEN" \
   -H "X-Tenant-Id: $TENANT_ID"
+curl -i "$BASE_URL/ledger/wallets/wallet-1001/balance" \
+  -H "Authorization: Bearer $TOKEN" \
+  -H "X-Tenant-Id: $TENANT_ID"
 ```
 
-When confirmed, the inventory response should show `reservedQty` increased by the order quantity and `availableQty` decreased by that amount. If a later saga step fails after reservation, compensation releases the reservation. The order eventually becomes `FAILED` after retries are exhausted.
+When confirmed, the inventory response should show `reservedQty` increased by the order quantity and `availableQty` decreased by that amount. With the example funding and payment amounts, the wallet's USD balance should be `9000` minor units. If a later saga step fails after reservation, compensation releases the reservation. The order eventually becomes `FAILED` after retries are exhausted.
 
 The order GET response currently includes its state and timestamps, but not the saga's detailed `last_error`. For a failed saga's reason, inspect `fulfillment_saga_jobs.last_error` in PostgreSQL:
 
@@ -214,7 +252,7 @@ The order GET response currently includes its state and timestamps, but not the 
 psql "$DATABASE_URL" -c "SELECT state, attempts, last_error FROM fulfillment_saga_jobs WHERE saga_id = '<saga-id-from-order-response>';"
 ```
 
-## 8. Cancel an order before fulfillment starts
+## 9. Cancel an order before fulfillment starts
 
 Cancellation is accepted only while the order is still `APPROVED` and its saga job remains pending. The worker may claim the job immediately, so cancellation can return a conflict if fulfillment has already started.
 

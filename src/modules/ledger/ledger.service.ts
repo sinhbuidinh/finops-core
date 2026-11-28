@@ -5,6 +5,9 @@ import { PostJournalEntryUseCase } from './application/post-journal-entry.use-ca
 import { ReverseJournalEntryUseCase } from './application/reverse-journal-entry.use-case.js';
 import type { JournalEntryInput } from './domain/journal-entry.js';
 import type { LedgerIdempotencyContext } from './application/ledger-entry-repository.port.js';
+import { JournalEntry } from './domain/journal-entry.js';
+import { Money } from '../../shared/domain/money.js';
+import { NotFoundException } from '@nestjs/common';
 import { PostgresLedgerEntryRepository } from './infrastructure/postgres-ledger-entry.repository.js';
 
 @Injectable()
@@ -15,29 +18,51 @@ export class LedgerService {
     private readonly entries: PostgresLedgerEntryRepository,
   ) {}
 
-  post(input: JournalEntryInput, key: string) {
-    return this.postEntry.execute(input, this.idempotency('ledger:post', key, input));
+  post(input: JournalEntryInput, key: string, tenantId?: string) {
+    return this.postEntry.execute(input, this.idempotency('ledger:post', key, { tenantId, input }), tenantId);
   }
 
-  reverse(originalEntryId: string, reversalEntryId: string, key: string) {
+  async createWallet(tenantId: string, walletId: string, name: string) {
+    await this.entries.createWallet({ tenantId, walletId, name });
+    return { walletId, tenantId };
+  }
+
+  findWallet(walletId: string, tenantId: string) { return this.entries.findWallet(walletId, tenantId); }
+
+  async postWalletPayment(input: { tenantId: string; walletId: string; entryId: string; description: string; postedAt?: string; amount: { minorUnits: string; currency: string } }, key: string) {
+    const wallet = await this.entries.findWallet(input.walletId, input.tenantId);
+    if (!wallet) throw new NotFoundException('Wallet not found');
+    const entry = JournalEntry.create({
+      id: input.entryId, description: input.description,
+      postedAt: input.postedAt ? new Date(input.postedAt) : undefined,
+      lines: [
+        { accountId: 'platform:order-clearing', side: 'DEBIT', amount: Money.fromMinorUnits(BigInt(input.amount.minorUnits), input.amount.currency) },
+        { accountId: wallet.ledgerAccountId, side: 'CREDIT', amount: Money.fromMinorUnits(BigInt(input.amount.minorUnits), input.amount.currency) },
+      ],
+    });
+    return this.postEntry.execute(entry, this.idempotency('ledger:post', key, { tenantId: input.tenantId, entry }), input.tenantId);
+  }
+
+  reverse(originalEntryId: string, reversalEntryId: string, key: string, tenantId?: string) {
     const request = { originalEntryId, reversalEntryId };
     return this.reverseEntry.execute({
       ...request,
-      idempotency: this.idempotency('ledger:reverse', key, request),
+      tenantId,
+      idempotency: this.idempotency('ledger:reverse', key, { tenantId, request }),
     });
   }
 
-  getBalance(accountId: string) {
-    return this.entries.getBalance(accountId);
+  getBalance(accountId: string, tenantId: string) {
+    return this.entries.getBalance(accountId, tenantId);
   }
 
-  async getHistory(cursor: string | undefined, requestedLimit: string | undefined) {
+  async getHistory(cursor: string | undefined, requestedLimit: string | undefined, tenantId: string) {
     const limit = requestedLimit === undefined ? 50 : Number(requestedLimit);
     if (!Number.isInteger(limit) || limit < 1 || limit > 100) {
       throw new DomainValidationError('limit must be an integer between 1 and 100', 'INVALID_PAGE_SIZE');
     }
     const after = cursor ? decodeCursor(cursor) : undefined;
-    const entries = await this.entries.getHistory({ after, limit: limit + 1 });
+    const entries = await this.entries.getHistory({ after, limit: limit + 1, tenantId });
     const hasMore = entries.length > limit;
     const items = entries.slice(0, limit);
     return {

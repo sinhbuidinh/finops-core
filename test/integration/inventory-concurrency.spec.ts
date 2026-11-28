@@ -1,21 +1,14 @@
 import { randomUUID } from 'node:crypto';
-import { existsSync, readFileSync } from 'node:fs';
+import { readFileSync } from 'node:fs';
 import { join } from 'node:path';
 import { Pool } from 'pg';
 import { DomainConflictError } from '../../src/shared/domain/domain-error.js';
 import { InventoryItem } from '../../src/modules/inventory/domain/inventory-item.js';
 import { PostgresInventoryRepository } from '../../src/modules/inventory/infrastructure/postgres-inventory.repository.js';
+import { describeWithTestDatabase, testDatabaseUrl } from '../helpers/test-database.js';
 
-if (!process.env.INVENTORY_TEST_DATABASE_URL && existsSync('.env')) process.loadEnvFile('.env');
-const connectionString = process.env.INVENTORY_TEST_DATABASE_URL;
-const integration = connectionString ? describe : describe.skip;
-const testDatabaseUrl = connectionString ? new URL(connectionString) : undefined;
-// docker-compose sets DB_HOST=postgres for the API container. There, loopback
-// refers to the API container rather than PostgreSQL; use the compose service DNS.
-if (testDatabaseUrl && process.env.DB_HOST === 'postgres') testDatabaseUrl.hostname = 'postgres';
-
-integration('inventory PostgreSQL concurrency', () => {
-  const pool = new Pool({ connectionString: testDatabaseUrl?.toString(), max: 20 });
+describeWithTestDatabase('inventory PostgreSQL concurrency', () => {
+  const pool = new Pool({ connectionString: testDatabaseUrl, max: 20 });
   const repository = new PostgresInventoryRepository(pool);
   const tenantId = `tenant-${randomUUID()}`;
   const otherTenantId = `tenant-${randomUUID()}`;

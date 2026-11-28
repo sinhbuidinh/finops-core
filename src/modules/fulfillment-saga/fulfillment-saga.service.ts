@@ -12,7 +12,10 @@ export class FulfillmentSagaService {
 
   async createOrder(input: { tenantId: string; inventoryItemId: string; quantity: number; payment: FulfillmentContext['payment'] }, key: string) {
     if (!key?.trim()) throw new BadRequestException('Idempotency-Key header is required');
-    if (!input.tenantId?.trim() || !input.inventoryItemId?.trim() || !Number.isInteger(input.quantity) || input.quantity <= 0 || !input.payment?.id || !Array.isArray(input.payment.lines)
+    const paymentFields = input.payment && typeof input.payment === 'object' ? Object.keys(input.payment) : [];
+    if (!input.tenantId?.trim() || !input.inventoryItemId?.trim() || !Number.isInteger(input.quantity) || input.quantity <= 0 || !input.payment?.id || !input.payment.walletId?.trim()
+      || !input.payment.amount || !/^\d+$/.test(input.payment.amount.minorUnits) || !input.payment.amount.currency
+      || paymentFields.some((field) => !['id', 'description', 'walletId', 'amount', 'postedAt'].includes(field))
       || (input.payment.postedAt !== undefined && Number.isNaN(new Date(input.payment.postedAt).getTime()))) {
       throw new BadRequestException('Invalid order payload');
     }
